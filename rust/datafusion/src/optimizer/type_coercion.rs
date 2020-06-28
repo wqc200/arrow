@@ -128,6 +128,7 @@ impl<'a> TypeCoercionRule<'a> {
             }),
             Expr::Cast { .. } => Ok(expr.clone()),
             Expr::Column(_) => Ok(expr.clone()),
+            Expr::SysVariable(_) => Ok(expr.clone()),
             Expr::Alias(expr, alias) => Ok(Expr::Alias(
                 Arc::new(self.rewrite_expr(expr, schema)?),
                 alias.to_owned(),

@@ -35,7 +35,7 @@ use crate::error::{ExecutionError, Result};
 use crate::execution::physical_plan::common;
 use crate::execution::physical_plan::datasource::DatasourceExec;
 use crate::execution::physical_plan::expressions::{
-    Alias, Avg, BinaryExpr, CastExpr, Column, Count, Literal, Max, Min, Sum,
+    Alias, SysVariable, Avg, BinaryExpr, CastExpr, Column, Count, Literal, Max, Min, Sum,
 };
 use crate::execution::physical_plan::hash_aggregate::HashAggregateExec;
 use crate::execution::physical_plan::limit::LimitExec;
@@ -54,7 +54,8 @@ use crate::optimizer::type_coercion::TypeCoercionRule;
 use crate::sql::parser::{DFASTNode, DFParser, FileType};
 use crate::sql::planner::{SchemaProvider, SqlToRel};
 use crate::table::Table;
-use sqlparser::sqlast::{SQLColumnDef, SQLType};
+use sqlparser::sqlast::{SQLColumnDef, SQLType, ASTNode};
+use sqlparser::sqlast::*;
 
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {
@@ -119,7 +120,7 @@ impl ExecutionContext {
     }
 
     /// Creates a logical plan
-    pub fn create_logical_plan(&mut self, sql: &str) -> Result<LogicalPlan> {
+    pub fn  create_logical_plan(&mut self, sql: &str) -> Result<LogicalPlan> {
         let ast = DFParser::parse_sql(String::from(sql))?;
 
         match ast {
@@ -276,26 +277,28 @@ impl ExecutionContext {
                 table_name,
                 projection,
                 ..
-            } => match self.datasources.get(table_name) {
-                Some(provider) => {
-                    let partitions = provider.scan(projection, batch_size)?;
-                    if partitions.is_empty() {
-                        Err(ExecutionError::General(
-                            "Table provider returned no partitions".to_string(),
-                        ))
-                    } else {
-                        let partition = partitions[0].lock().unwrap();
-                        let schema = partition.schema();
-                        let exec =
-                            DatasourceExec::new(schema.clone(), partitions.clone());
-                        Ok(Arc::new(exec))
+            } => {
+                match self.datasources.get(table_name) {
+                    Some(provider) => {
+                        let partitions = provider.scan(projection, batch_size)?;
+                        if partitions.is_empty() {
+                            Err(ExecutionError::General(
+                                "Table provider returned no partitions".to_string(),
+                            ))
+                        } else {
+                            let partition = partitions[0].lock().unwrap();
+                            let schema = partition.schema();
+                            let exec =
+                                DatasourceExec::new(schema.clone(), partitions.clone());
+                            Ok(Arc::new(exec))
+                        }
                     }
+                    _ => Err(ExecutionError::General(format!(
+                        "No table named {}",
+                        table_name
+                    ))),
                 }
-                _ => Err(ExecutionError::General(format!(
-                    "No table named {}",
-                    table_name
-                ))),
-            },
+            }
             LogicalPlan::Projection { input, expr, .. } => {
                 let input = self.create_physical_plan(input, batch_size)?;
                 let input_schema = input.as_ref().schema().clone();
@@ -405,6 +408,12 @@ impl ExecutionContext {
             Expr::Alias(expr, name) => {
                 let expr = self.create_physical_expr(expr, input_schema)?;
                 Ok(Arc::new(Alias::new(expr, &name)))
+            }
+            Expr::SysVariable(name) => {
+                let mut SysVariable: HashMap<&str, &str> = HashMap::new();
+                SysVariable.insert("@@version_comment", "test");
+
+                Ok(Arc::new(SysVariable::new(&name, "test")))
             }
             Expr::Column(i) => {
                 Ok(Arc::new(Column::new(*i, &input_schema.field(*i).name())))
@@ -580,7 +589,6 @@ impl SchemaProvider for ExecutionContextSchemaProvider<'_> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::datasource::MemTable;
     use crate::execution::physical_plan::udf::ScalarUdf;

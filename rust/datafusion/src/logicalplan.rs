@@ -185,6 +185,8 @@ pub enum Expr {
     Column(usize),
     /// Reference to column by name
     UnresolvedColumn(String),
+    ///
+    SysVariable(String),
     /// literal value
     Literal(ScalarValue),
     /// binary expression e.g. "age > 21"
@@ -246,6 +248,9 @@ impl Expr {
             Expr::Column(n) => Ok(schema.field(*n).data_type().clone()),
             Expr::UnresolvedColumn(name) => {
                 Ok(schema.field_with_name(&name)?.data_type().clone())
+            }
+            Expr::SysVariable(s) => {
+                Ok(DataType::Utf8)
             }
             Expr::Literal(l) => Ok(l.get_datatype()),
             Expr::Cast { data_type, .. } => Ok(data_type.clone()),
@@ -429,6 +434,7 @@ impl fmt::Debug for Expr {
             Expr::Alias(expr, alias) => write!(f, "{:?} AS {}", expr, alias),
             Expr::Column(i) => write!(f, "#{}", i),
             Expr::UnresolvedColumn(name) => write!(f, "#{}", name),
+            Expr::SysVariable(s) => write!(f, "#{}", s),
             Expr::Literal(v) => write!(f, "{:?}", v),
             Expr::Cast { expr, data_type } => {
                 write!(f, "CAST({:?} AS {:?})", expr, data_type)

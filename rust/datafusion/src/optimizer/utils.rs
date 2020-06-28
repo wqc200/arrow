@@ -45,6 +45,9 @@ pub fn expr_to_column_indices(expr: &Expr, accum: &mut HashSet<usize>) -> Result
             accum.insert(*i);
             Ok(())
         }
+        Expr::SysVariable(_) => {
+            Ok(())
+        }
         Expr::UnresolvedColumn(_) => Err(ExecutionError::ExecutionError(
             "Columns need to be resolved before this rule can run".to_owned(),
         )),
@@ -77,6 +80,9 @@ pub fn expr_to_field(e: &Expr, input_schema: &Schema) -> Result<Field> {
             Ok(Field::new(name, expr.get_type(input_schema)?, true))
         }
         Expr::UnresolvedColumn(name) => Ok(input_schema.field_with_name(&name)?.clone()),
+        Expr::SysVariable(s) => {
+            Ok(Field::new(s, DataType::Utf8, true))
+        },
         Expr::Column(i) => {
             let input_schema_field_count = input_schema.fields().len();
             if *i < input_schema_field_count {

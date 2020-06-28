@@ -71,7 +71,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
                 // parse the input relation so we have access to the row type
                 let plan = match *relation {
                     Some(ref r) => self.sql_to_rel(r)?,
-                    None => LogicalPlanBuilder::empty().build()?,
+                    None => self.sql_to_rel(&ASTNode::SQLIdentifier("dual".to_string()))?,
                 };
 
                 // selection first
@@ -286,6 +286,10 @@ impl<S: SchemaProvider> SqlToRel<S> {
                         schema.to_string()
                     ))),
                 }
+            }
+
+            ASTNode::SQLSysVariable(ref id) => {
+                Ok(Expr::SysVariable(id.to_string()))
             }
 
             ASTNode::SQLWildcard => Ok(Expr::Wildcard),

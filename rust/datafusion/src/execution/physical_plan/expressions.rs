@@ -76,6 +76,40 @@ impl PhysicalExpr for Alias {
     }
 }
 
+/// Represents an aliased expression
+pub struct SysVariable {
+    name: String,
+    value: String,
+}
+
+impl SysVariable {
+    /// Create a new aliased expression
+    pub fn new(name: &str, value: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+}
+
+impl PhysicalExpr for SysVariable {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
+        let mut builder = StringBuilder::new(batch.num_rows());
+        for _ in 0..batch.num_rows() {
+            builder.append_value(self.value.as_ref())?;
+        }
+        Ok(Arc::new(builder.finish()))
+    }
+}
+
 /// Represents the column at a given index in a RecordBatch
 pub struct Column {
     index: usize,
@@ -1201,7 +1235,7 @@ impl Literal {
 
 /// Build array containing the same literal value repeated. This is necessary because the Arrow
 /// memory model does not have the concept of a scalar value currently.
-macro_rules! build_literal_array {
+macro_rules!  build_literal_array {
     ($BATCH:ident, $BUILDER:ident, $VALUE:expr) => {{
         let mut builder = $BUILDER::new($BATCH.num_rows());
         for _ in 0..$BATCH.num_rows() {

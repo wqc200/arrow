@@ -116,7 +116,7 @@ impl ProjectionPushDown {
 
                 // Ensure that we are reading at least one column from the table in case the query
                 // does not reference any columns directly such as "SELECT COUNT(1) FROM table"
-                if projection.is_empty() {
+                if projection.is_empty(){
                     projection.push(0);
                 }
 
@@ -202,6 +202,9 @@ impl ProjectionPushDown {
             Expr::UnresolvedColumn(_) => Err(ExecutionError::ExecutionError(
                 "Columns need to be resolved before this rule can run".to_owned(),
             )),
+            Expr::SysVariable(s) => {
+                Ok(expr.clone())
+            }
             Expr::Literal(_) => Ok(expr.clone()),
             Expr::Not(e) => Ok(Expr::Not(Arc::new(self.rewrite_expr(e, mapping)?))),
             Expr::IsNull(e) => Ok(Expr::IsNull(Arc::new(self.rewrite_expr(e, mapping)?))),

@@ -465,22 +465,27 @@ impl ExecutionContext {
         input_schema: &Schema,
     ) -> Result<Arc<dyn AggregateExpr>> {
         match e {
-            Expr::AggregateFunction { name, args, .. } => {
+            Expr::AggregateFunction { name, args, original_text, return_type } => {
                 match name.to_lowercase().as_ref() {
                     "sum" => Ok(Arc::new(Sum::new(
                         self.create_physical_expr(&args[0], input_schema)?,
+                        original_text.to_string()
                     ))),
                     "avg" => Ok(Arc::new(Avg::new(
                         self.create_physical_expr(&args[0], input_schema)?,
+                        original_text.to_string()
                     ))),
                     "max" => Ok(Arc::new(Max::new(
                         self.create_physical_expr(&args[0], input_schema)?,
+                        original_text.to_string()
                     ))),
                     "min" => Ok(Arc::new(Min::new(
                         self.create_physical_expr(&args[0], input_schema)?,
+                        original_text.to_string()
                     ))),
                     "count" => Ok(Arc::new(Count::new(
                         self.create_physical_expr(&args[0], input_schema)?,
+                        original_text.to_string()
                     ))),
                     other => Err(ExecutionError::NotImplemented(format!(
                         "Unsupported aggregate function '{}'",

@@ -226,10 +226,12 @@ impl ProjectionPushDown {
             }),
             Expr::AggregateFunction {
                 name,
+                original_text,
                 args,
                 return_type,
             } => Ok(Expr::AggregateFunction {
                 name: name.to_string(),
+                original_text: original_text.to_string(),
                 args: self.rewrite_expr_list(args, mapping)?,
                 return_type: return_type.clone(),
             }),

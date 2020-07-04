@@ -163,11 +163,12 @@ impl<S: SchemaProvider> SqlToRel<S> {
         let group_by_count = group_expr.len();
         let aggr_count = aggr_expr.len();
 
-        if group_by_count + aggr_count != projection_expr.len() {
-            return Err(ExecutionError::General(
-                "Projection references non-aggregate values".to_owned(),
-            ));
-        }
+        // TODO 20200629
+        // if group_by_count + aggr_count != projection_expr.len() {
+        //     return Err(ExecutionError::General(
+        //         "Projection references non-aggregate values".to_owned(),
+        //     ));
+        // }
 
         let plan = LogicalPlanBuilder::from(&input)
             .aggregate(group_expr, aggr_expr)?
@@ -362,7 +363,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
             //                expr: Arc::new(self.sql_to_rex(&expr, &schema)?),
             //                asc,
             //            }),
-            ASTNode::SQLFunction { ref id, ref args } => {
+            ASTNode::SQLFunction { ref id, ref args, ref original_text} => {
                 //TODO: fix this hack
                 match id.to_lowercase().as_ref() {
                     "min" | "max" | "sum" | "avg" => {
@@ -377,6 +378,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
                         Ok(Expr::AggregateFunction {
                             name: id.clone(),
+                            original_text: id.to_string() + original_text,
                             args: rex_args,
                             return_type,
                         })
@@ -397,6 +399,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
                         Ok(Expr::AggregateFunction {
                             name: id.clone(),
+                            original_text: id.to_string() + original_text,
                             args: rex_args,
                             return_type: DataType::UInt64,
                         })

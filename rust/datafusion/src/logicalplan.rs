@@ -231,6 +231,7 @@ pub enum Expr {
     AggregateFunction {
         /// Name of the function
         name: String,
+        original_text: String,
         /// List of expressions to feed to the functions as arguments
         args: Vec<Expr>,
         /// The `DataType` the expression will yield
@@ -414,6 +415,7 @@ unary_math_expr!("log10", log10);
 pub fn aggregate_expr(name: &str, expr: Expr, return_type: DataType) -> Expr {
     Expr::AggregateFunction {
         name: name.to_owned(),
+        original_text: name.to_owned(),
         args: vec![expr],
         return_type,
     }

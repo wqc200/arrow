@@ -63,6 +63,7 @@ pub trait PhysicalExpr: Send + Sync {
 pub trait AggregateExpr: Send + Sync {
     /// Get the name to use in a schema to represent the result of this expression
     fn name(&self) -> String;
+    fn original_text(&self) -> String;
     /// Get the data type of this expression, given the schema of the input
     fn data_type(&self, input_schema: &Schema) -> Result<DataType>;
     /// Evaluate the expression being aggregated

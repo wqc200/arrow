@@ -150,6 +150,7 @@ impl TableImpl {
         let return_type = self.get_data_type(expr)?;
         Ok(Expr::AggregateFunction {
             name: name.to_string(),
+            original_text: name.to_string(),
             args: vec![expr.clone()],
             return_type,
         })

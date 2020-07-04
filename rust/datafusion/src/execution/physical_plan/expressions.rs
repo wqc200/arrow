@@ -52,16 +52,6 @@ pub struct Alias {
     alias: String,
 }
 
-impl Alias {
-    /// Create a new aliased expression
-    pub fn new(expr: Arc<dyn PhysicalExpr>, alias: &str) -> Self {
-        Self {
-            expr: expr.clone(),
-            alias: alias.to_owned(),
-        }
-    }
-}
-
 impl PhysicalExpr for Alias {
     fn name(&self) -> String {
         self.alias.clone()
@@ -73,6 +63,16 @@ impl PhysicalExpr for Alias {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef> {
         self.expr.evaluate(batch)
+    }
+}
+
+impl Alias {
+    /// Create a new aliased expression
+    pub fn new(expr: Arc<dyn PhysicalExpr>, alias: &str) -> Self {
+        Self {
+            expr: expr.clone(),
+            alias: alias.to_owned(),
+        }
     }
 }
 
@@ -151,18 +151,22 @@ pub fn col(i: usize, schema: &Schema) -> Arc<dyn PhysicalExpr> {
 /// SUM aggregate expression
 pub struct Sum {
     expr: Arc<dyn PhysicalExpr>,
+    original_text: String,
 }
 
 impl Sum {
     /// Create a new SUM aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, original_text: String) -> Self {
+        Self { expr, original_text }
     }
 }
 
 impl AggregateExpr for Sum {
     fn name(&self) -> String {
         "SUM".to_string()
+    }
+    fn original_text(&self) -> String {
+        return self.original_text.clone();
     }
 
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
@@ -191,7 +195,7 @@ impl AggregateExpr for Sum {
     }
 
     fn create_reducer(&self, column_index: usize) -> Arc<dyn AggregateExpr> {
-        Arc::new(Sum::new(Arc::new(Column::new(column_index, &self.name()))))
+        Arc::new(Sum::new(Arc::new(Column::new(column_index, &self.name())), self.original_text.clone()))
     }
 }
 
@@ -341,24 +345,29 @@ impl Accumulator for SumAccumulator {
 
 /// Create a sum expression
 pub fn sum(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
-    Arc::new(Sum::new(expr))
+    Arc::new(Sum::new(expr, "SUM()".to_string()))
 }
 
 /// AVG aggregate expression
 pub struct Avg {
     expr: Arc<dyn PhysicalExpr>,
+    original_text: String,
 }
 
 impl Avg {
     /// Create a new AVG aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, original_text: String) -> Self {
+        Self { expr, original_text }
     }
 }
 
 impl AggregateExpr for Avg {
     fn name(&self) -> String {
         "AVG".to_string()
+    }
+
+    fn original_text(&self) -> String {
+        return self.original_text.clone();
     }
 
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
@@ -392,7 +401,7 @@ impl AggregateExpr for Avg {
     }
 
     fn create_reducer(&self, column_index: usize) -> Arc<dyn AggregateExpr> {
-        Arc::new(Avg::new(Arc::new(Column::new(column_index, &self.name()))))
+        Arc::new(Avg::new(Arc::new(Column::new(column_index, &self.name())), self.original_text.clone()))
     }
 }
 
@@ -459,18 +468,19 @@ impl Accumulator for AvgAccumulator {
 
 /// Create a avg expression
 pub fn avg(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
-    Arc::new(Avg::new(expr))
+    Arc::new(Avg::new(expr, "AVG()".to_string()))
 }
 
 /// MAX aggregate expression
 pub struct Max {
     expr: Arc<dyn PhysicalExpr>,
+    original_text: String,
 }
 
 impl Max {
     /// Create a new MAX aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, original_text: String) -> Self {
+        Self { expr, original_text }
     }
 }
 
@@ -478,7 +488,9 @@ impl AggregateExpr for Max {
     fn name(&self) -> String {
         "MAX".to_string()
     }
-
+    fn original_text(&self) -> String {
+        return self.original_text.clone();
+    }
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         match self.expr.data_type(input_schema)? {
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
@@ -505,7 +517,7 @@ impl AggregateExpr for Max {
     }
 
     fn create_reducer(&self, column_index: usize) -> Arc<dyn AggregateExpr> {
-        Arc::new(Max::new(Arc::new(Column::new(column_index, &self.name()))))
+        Arc::new(Max::new(Arc::new(Column::new(column_index, &self.name())), self.original_text.clone()))
     }
 }
 
@@ -658,18 +670,19 @@ impl Accumulator for MaxAccumulator {
 
 /// Create a max expression
 pub fn max(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
-    Arc::new(Max::new(expr))
+    Arc::new(Max::new(expr, "MAX()".to_string()))
 }
 
 /// MIN aggregate expression
 pub struct Min {
     expr: Arc<dyn PhysicalExpr>,
+    original_text: String,
 }
 
 impl Min {
     /// Create a new MIN aggregate function
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, original_text: String) -> Self {
+        Self { expr, original_text }
     }
 }
 
@@ -677,7 +690,9 @@ impl AggregateExpr for Min {
     fn name(&self) -> String {
         "MIN".to_string()
     }
-
+    fn original_text(&self) -> String {
+        return self.original_text.clone();
+    }
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         match self.expr.data_type(input_schema)? {
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
@@ -704,7 +719,7 @@ impl AggregateExpr for Min {
     }
 
     fn create_reducer(&self, column_index: usize) -> Arc<dyn AggregateExpr> {
-        Arc::new(Min::new(Arc::new(Column::new(column_index, &self.name()))))
+        Arc::new(Min::new(Arc::new(Column::new(column_index, &self.name())), self.original_text.clone()))
     }
 }
 
@@ -857,19 +872,20 @@ impl Accumulator for MinAccumulator {
 
 /// Create a min expression
 pub fn min(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
-    Arc::new(Min::new(expr))
+    Arc::new(Min::new(expr, "MAX()".to_string()))
 }
 
 /// COUNT aggregate expression
 /// Returns the amount of non-null values of the given expression.
 pub struct Count {
     expr: Arc<dyn PhysicalExpr>,
+    original_text: String,
 }
 
 impl Count {
     /// Create a new COUNT aggregate function.
-    pub fn new(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr: expr }
+    pub fn new(expr: Arc<dyn PhysicalExpr>, original_text: String) -> Self {
+        Self { expr: expr, original_text }
     }
 }
 
@@ -877,7 +893,9 @@ impl AggregateExpr for Count {
     fn name(&self) -> String {
         "COUNT".to_string()
     }
-
+    fn original_text(&self) -> String {
+        return self.original_text.clone();
+    }
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::UInt64)
     }
@@ -891,7 +909,7 @@ impl AggregateExpr for Count {
     }
 
     fn create_reducer(&self, column_index: usize) -> Arc<dyn AggregateExpr> {
-        Arc::new(Sum::new(Arc::new(Column::new(column_index, &self.name()))))
+        Arc::new(Sum::new(Arc::new(Column::new(column_index, &self.name())), self.original_text.clone()))
     }
 }
 
@@ -919,7 +937,7 @@ impl Accumulator for CountAccumulator {
 
 /// Create a count expression
 pub fn count(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
-    Arc::new(Count::new(expr))
+    Arc::new(Count::new(expr, "COUNT()".to_string()))
 }
 
 /// Invoke a compute kernel on a pair of binary data arrays

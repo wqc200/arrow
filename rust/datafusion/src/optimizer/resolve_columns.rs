@@ -103,10 +103,12 @@ fn rewrite_expr(expr: &Expr, schema: &Schema) -> Result<Expr> {
         }),
         Expr::AggregateFunction {
             name,
+            original_text,
             args,
             return_type,
         } => Ok(Expr::AggregateFunction {
             name: name.clone(),
+            original_text: original_text.to_string(),
             args: rewrite_expr_list(args, schema)?,
             return_type: return_type.clone(),
         }),

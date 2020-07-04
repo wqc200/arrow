@@ -116,10 +116,12 @@ impl<'a> TypeCoercionRule<'a> {
             }
             Expr::AggregateFunction {
                 name,
+                original_text,
                 args,
                 return_type,
             } => Ok(Expr::AggregateFunction {
                 name: name.clone(),
+                original_text: original_text.clone(),
                 args: args
                     .iter()
                     .map(|a| self.rewrite_expr(a, schema))

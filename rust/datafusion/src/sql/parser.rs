@@ -21,9 +21,10 @@
 //! SQL but this module contains DataFusion-specific SQL extensions.
 
 use sqlparser::dialect::*;
-use sqlparser::sqlast::*;
-use sqlparser::sqlparser::*;
-use sqlparser::sqltokenizer::*;
+use sqlparser::dialect::keywords::Keyword;
+use sqlparser::ast::*;
+use sqlparser::parser::*;
+use sqlparser::tokenizer::*;
 
 macro_rules! parser_err {
     ($MSG:expr) => {
@@ -48,13 +49,13 @@ pub enum FileType {
 #[derive(Debug, Clone)]
 pub enum DFASTNode {
     /// ANSI SQL AST node
-    ANSI(ASTNode),
+    ANSI(Statement),
     /// DDL for creating an external table in DataFusion
     CreateExternalTable {
         /// Table name
         name: String,
         /// Optional schema
-        columns: Vec<SQLColumnDef>,
+        columns: Vec<ColumnDef>,
         /// File type (Parquet, NDJSON, CSV)
         file_type: FileType,
         /// CSV Header row?
@@ -72,7 +73,7 @@ pub struct DFParser {
 impl DFParser {
     /// Parse the specified tokens
     pub fn new(sql: &str) -> Result<Self, ParserError> {
-        let dialect = GenericSqlDialect {};
+        let dialect = MySqlDialect {};
         let mut tokenizer = Tokenizer::new(&dialect, sql);
         let tokens = tokenizer.tokenize()?;
         Ok(DFParser {
@@ -111,40 +112,38 @@ impl DFParser {
     fn parse_prefix(&mut self) -> Result<DFASTNode, ParserError> {
         if self
             .parser
-            .parse_keywords(vec!["CREATE", "EXTERNAL", "TABLE"])
+            .parse_keywords(&[Keyword::CREATE, Keyword::EXTERNAL, Keyword::TABLE])
         {
             match self.parser.next_token() {
-                Some(Token::Identifier(id)) => {
+                Token::Word(id) => {
                     // parse optional column list (schema)
                     let mut columns = vec![];
                     if self.parser.consume_token(&Token::LParen) {
                         loop {
-                            if let Some(Token::Identifier(column_name)) =
+                            if let Token::Word(column_name) =
                                 self.parser.next_token()
                             {
                                 if let Ok(data_type) = self.parser.parse_data_type() {
                                     let allow_null = if self
                                         .parser
-                                        .parse_keywords(vec!["NOT", "NULL"])
+                                        .parse_keywords(&[Keyword::NOT, Keyword::NULL])
                                     {
                                         false
-                                    } else if self.parser.parse_keyword("NULL") {
+                                    } else if self.parser.parse_keyword(Keyword::NULL) {
                                         true
                                     } else {
                                         true
                                     };
 
-                                    columns.push(SQLColumnDef {
-                                        name: column_name,
+                                    columns.push(ColumnDef {
+                                        name: Ident::from(column_name.value.as_str()),
                                         data_type: data_type,
-                                        allow_null,
-                                        default: None,
-                                        is_primary: false,
-                                        is_unique: false,
+                                        collation: None,
+                                        options: vec![]
                                     });
                                     match self.parser.next_token() {
-                                        Some(Token::Comma) => continue,
-                                        Some(Token::RParen) => break,
+                                        Token::Comma => continue,
+                                        Token::RParen => break,
                                         _ => {
                                             return parser_err!(
                                                 "Expected ',' or ')' after column definition"
@@ -165,20 +164,20 @@ impl DFParser {
                     let mut has_header = true;
                     let file_type: FileType = if self
                         .parser
-                        .parse_keywords(vec!["STORED", "AS", "CSV"])
+                        .parse_keywords(&[Keyword::STORED, Keyword::AS, Keyword::CSV])
                     {
-                        if self.parser.parse_keywords(vec!["WITH", "HEADER", "ROW"]) {
+                        if self.parser.parse_keywords(&[Keyword::WITH, Keyword::HEADER, Keyword::ROW]) {
                             has_header = true;
                         } else if self
                             .parser
-                            .parse_keywords(vec!["WITHOUT", "HEADER", "ROW"])
+                            .parse_keywords(&[Keyword::WITHOUT, Keyword::HEADER, Keyword::ROW])
                         {
                             has_header = false;
                         }
                         FileType::CSV
-                    } else if self.parser.parse_keywords(vec!["STORED", "AS", "NDJSON"]) {
-                        FileType::NdJson
-                    } else if self.parser.parse_keywords(vec!["STORED", "AS", "PARQUET"])
+                    // } else if self.parser.parse_keywords(&[Keyword::STORED, Keyword::AS, Keyword::NDJSON]) {
+                    //     FileType::NdJson
+                    } else if self.parser.parse_keywords(&[Keyword::STORED, Keyword::AS, Keyword::PARQUET])
                     {
                         FileType::Parquet
                     } else {
@@ -188,7 +187,7 @@ impl DFParser {
                         ));
                     };
 
-                    let location: String = if self.parser.parse_keywords(vec!["LOCATION"])
+                    let location: String = if self.parser.parse_keywords(&[Keyword::LOCATION])
                     {
                         self.parser.parse_literal_string()?
                     } else {
@@ -196,7 +195,7 @@ impl DFParser {
                     };
 
                     Ok(DFASTNode::CreateExternalTable {
-                        name: id,
+                        name: id.to_string(),
                         columns,
                         file_type,
                         has_header,
@@ -209,7 +208,7 @@ impl DFParser {
                 )),
             }
         } else {
-            Ok(DFASTNode::ANSI(self.parser.parse_prefix()?))
+            Ok(DFASTNode::ANSI(self.parser.parse_statement()?))
         }
     }
 

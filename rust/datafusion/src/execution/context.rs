@@ -59,7 +59,7 @@ use crate::optimizer::type_coercion::TypeCoercionRule;
 use crate::sql::parser::{DFASTNode, DFParser, FileType};
 use crate::sql::planner::{SchemaProvider, SqlToRel};
 use crate::table::Table;
-use sqlparser::sqlast::{SQLColumnDef, SQLType};
+use sqlparser::ast::{ColumnDef, ColumnOption, ColumnOptionDef, DataType as SqlDataType};
 
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {
@@ -178,39 +178,50 @@ impl ExecutionContext {
         &self.scalar_functions
     }
 
-    fn build_schema(&self, columns: Vec<SQLColumnDef>) -> Result<Schema> {
+    fn build_schema(&self, columns: Vec<ColumnDef>) -> Result<Schema> {
         let mut fields = Vec::new();
 
         for column in columns {
             let data_type = self.make_data_type(column.data_type)?;
-            fields.push(Field::new(&column.name, data_type, column.allow_null));
+
+            let mut null_able = false;
+            for option in &column.options {
+                match option.option {
+                    ColumnOption::Null => {
+                        null_able = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            fields.push(Field::new(&column.name.value, data_type, null_able));
         }
 
         Ok(Schema::new(fields))
     }
 
-    fn make_data_type(&self, sql_type: SQLType) -> Result<DataType> {
+    fn make_data_type(&self, sql_type: SqlDataType) -> Result<DataType> {
         match sql_type {
-            SQLType::BigInt => Ok(DataType::Int64),
-            SQLType::Int => Ok(DataType::Int32),
-            SQLType::SmallInt => Ok(DataType::Int16),
-            SQLType::Char(_) | SQLType::Varchar(_) | SQLType::Text => Ok(DataType::Utf8),
-            SQLType::Decimal(_, _) => Ok(DataType::Float64),
-            SQLType::Float(_) => Ok(DataType::Float32),
-            SQLType::Real | SQLType::Double => Ok(DataType::Float64),
-            SQLType::Boolean => Ok(DataType::Boolean),
-            SQLType::Date => Ok(DataType::Date64(DateUnit::Day)),
-            SQLType::Time => Ok(DataType::Time64(TimeUnit::Millisecond)),
-            SQLType::Timestamp => Ok(DataType::Date64(DateUnit::Millisecond)),
-            SQLType::Uuid
-            | SQLType::Clob(_)
-            | SQLType::Binary(_)
-            | SQLType::Varbinary(_)
-            | SQLType::Blob(_)
-            | SQLType::Regclass
-            | SQLType::Bytea
-            | SQLType::Custom(_)
-            | SQLType::Array(_) => Err(ExecutionError::General(format!(
+            SqlDataType::BigInt => Ok(DataType::Int64),
+            SqlDataType::Int => Ok(DataType::Int32),
+            SqlDataType::SmallInt => Ok(DataType::Int16),
+            SqlDataType::Char(_) | SqlDataType::Varchar(_) | SqlDataType::Text => Ok(DataType::Utf8),
+            SqlDataType::Decimal(_, _) => Ok(DataType::Float64),
+            SqlDataType::Float(_) => Ok(DataType::Float32),
+            SqlDataType::Real | SqlDataType::Double => Ok(DataType::Float64),
+            SqlDataType::Boolean => Ok(DataType::Boolean),
+            SqlDataType::Date => Ok(DataType::Date64(DateUnit::Day)),
+            SqlDataType::Time => Ok(DataType::Time64(TimeUnit::Millisecond)),
+            SqlDataType::Timestamp => Ok(DataType::Date64(DateUnit::Millisecond)),
+            SqlDataType::Uuid
+            | SqlDataType::Clob(_)
+            | SqlDataType::Binary(_)
+            | SqlDataType::Varbinary(_)
+            | SqlDataType::Blob(_)
+            | SqlDataType::Regclass
+            | SqlDataType::Bytea
+            | SqlDataType::Custom(_)
+            | SqlDataType::Array(_) => Err(ExecutionError::General(format!(
                 "Unsupported data type: {:?}.",
                 sql_type
             ))),

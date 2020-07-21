@@ -18,6 +18,8 @@
 //! SQL Query Planner (produces logical plan from SQL AST)
 
 use std::sync::Arc;
+#[cfg(feature = "bigdecimal")]
+use bigdecimal::BigDecimal;
 
 use crate::error::{ExecutionError, Result};
 use crate::logicalplan::{
@@ -27,7 +29,9 @@ use crate::logicalplan::{
 use arrow::datatypes::*;
 
 use crate::logicalplan::Expr::Alias;
-use sqlparser::sqlast::*;
+use sqlparser::ast::{Statement, SetExpr, SelectItem, UnaryOperator, BinaryOperator, Function, OrderByExpr};
+use sqlparser::ast::Expr as ASTExpr;
+use sqlparser::ast::DataType as ASTDataType;
 
 /// The SchemaProvider trait allows the query planner to obtain meta-data about tables and
 /// functions referenced in SQL statements
@@ -49,75 +53,85 @@ impl<S: SchemaProvider> SqlToRel<S> {
         SqlToRel { schema_provider }
     }
 
+    fn relation(&self, id: &str) -> Result<LogicalPlan> {
+        match self.schema_provider.get_table_meta(id.as_ref()) {
+            Some(schema) => Ok(LogicalPlanBuilder::scan(
+                "default",
+                id,
+                schema.as_ref(),
+                None,
+            )?
+                .build()?),
+            None => Err(ExecutionError::General(format!(
+                "no schema found for table {}",
+                id
+            ))),
+        }
+    }
+
     /// Generate a logic plan from a SQL AST node
-    pub fn sql_to_rel(&self, sql: &ASTNode) -> Result<LogicalPlan> {
-        match *sql {
-            ASTNode::SQLSelect {
-                ref projection,
-                ref relation,
-                ref selection,
-                ref order_by,
-                ref limit,
-                ref group_by,
-                ref having,
-                ..
-            } => {
-                if having.is_some() {
-                    return Err(ExecutionError::NotImplemented(
-                        "HAVING is not implemented yet".to_string(),
-                    ));
-                }
+    pub fn sql_to_rel(&self, sql: &Statement) -> Result<LogicalPlan> {
+        let plan = LogicalPlanBuilder::empty();
 
-                // parse the input relation so we have access to the row type
-                let plan = match *relation {
-                    Some(ref r) => self.sql_to_rel(r)?,
-                    None => LogicalPlanBuilder::empty().build()?,
-                };
+        match sql {
+            Statement::Query(query) => {
+                match query.body {
+                    SetExpr::Select(s) => {
+                        if s.having.is_some() {
+                            return Err(ExecutionError::NotImplemented(
+                                "HAVING is not implemented yet".to_string(),
+                            ));
+                        }
 
-                // selection first
-                let plan = self.filter(&plan, selection)?;
+                        if s.from.len() > 0 {
+                            let plan = self.relation(s.from.pop().unwrap().relation.table.name);
+                        } else {
+                            let plan = self.relation("dual".as_ref());
+                        }
 
-                let projection_expr: Vec<Expr> = projection
-                    .iter()
-                    .map(|e| self.sql_to_rex(&e, &plan.schema()))
-                    .collect::<Result<Vec<Expr>>>()?;
+                        // parse the input relation so we have access to the row type
+                        let plan = match s.from.pop().unwrap().relation {
+                            TableFactor::Table {
+                                name,
+                                alias,
+                                args,
+                                with_hints,
+                            }
+                            None => self.relation("dual".as_ref())?,
+                            _ => {}
+                        };
 
-                let aggr_expr: Vec<Expr> = projection_expr
-                    .iter()
-                    .filter(|e| is_aggregate_expr(e))
-                    .map(|e| e.clone())
-                    .collect();
+                        // selection first
+                        let plan = self.filter(&plan, &s.selection)?;
 
-                // apply projection or aggregate
-                let plan = if group_by.is_some() || aggr_expr.len() > 0 {
-                    self.aggregate(&plan, projection_expr, group_by, aggr_expr)?
-                } else {
-                    self.project(&plan, projection_expr)?
-                };
+                        let projection_expr: Vec<Expr> = s.projection
+                            .iter()
+                            .map(|e| self.sql_to_rex(self.select_item(e), &plan.schema()))
+                            .collect::<Result<Vec<Expr>>>()?;
 
-                // apply ORDER BY
-                let plan = self.order_by(&plan, order_by)?;
+                        let aggr_expr: Vec<Expr> = projection_expr
+                            .iter()
+                            .filter(|e| is_aggregate_expr(e))
+                            .map(|e| e.clone())
+                            .collect();
 
-                // apply LIMIT
-                self.limit(&plan, limit)
-            }
+                        // apply projection or aggregate
+                        let plan = if s.group_by.len() > 0 || aggr_expr.len() > 0 {
+                            self.aggregate(&plan, projection_expr, s.group_by, aggr_expr)?
+                        } else {
+                            self.project(&plan, projection_expr)?
+                        };
 
-            ASTNode::SQLIdentifier(ref id) => {
-                match self.schema_provider.get_table_meta(id.as_ref()) {
-                    Some(schema) => Ok(LogicalPlanBuilder::scan(
-                        "default",
-                        id,
-                        schema.as_ref(),
-                        None,
-                    )?
-                    .build()?),
-                    None => Err(ExecutionError::General(format!(
-                        "no schema found for table {}",
-                        id
-                    ))),
+
+                        let plan = self.order_by(&plan, query.order_by)?;
+
+                        let plan = self.limit(&plan, &query.limit)?;
+
+                        Ok(plan)
+                    }
+                    _ => {}
                 }
             }
-
             _ => Err(ExecutionError::ExecutionError(format!(
                 "sql_to_rel does not support this relation: {:?}",
                 sql
@@ -125,17 +139,25 @@ impl<S: SchemaProvider> SqlToRel<S> {
         }
     }
 
+    fn select_item(&self, selectItem: &SelectItem) -> &ASTExpr {
+        match selectItem {
+            SelectItem::UnnamedExpr(expr) => expr,
+            SelectItem::Wildcard => ASTExpr::Wildcard,
+            _ => panic!("Expected UnnamedExpr"),
+        }
+    }
+
     /// Apply a filter to the plan
     fn filter(
         &self,
-        plan: &LogicalPlan,
-        selection: &Option<Box<ASTNode>>,
+        input: &LogicalPlan,
+        selection: &Option<ASTExpr>,
     ) -> Result<LogicalPlan> {
         match *selection {
-            Some(ref filter_expr) => LogicalPlanBuilder::from(&plan)
-                .filter(self.sql_to_rex(filter_expr, &plan.schema())?)?
+            Some(ref filter_expr) => LogicalPlanBuilder::from(&input)
+                .filter(self.sql_to_rex(filter_expr, &input.schema())?)?
                 .build(),
-            _ => Ok(plan.clone()),
+            _ => Ok(input.clone()),
         }
     }
 
@@ -149,16 +171,13 @@ impl<S: SchemaProvider> SqlToRel<S> {
         &self,
         input: &LogicalPlan,
         projection_expr: Vec<Expr>,
-        group_by: &Option<Vec<ASTNode>>,
+        group_by: Vec<ASTExpr>,
         aggr_expr: Vec<Expr>,
     ) -> Result<LogicalPlan> {
-        let group_expr: Vec<Expr> = match group_by {
-            Some(gbe) => gbe
-                .iter()
-                .map(|e| self.sql_to_rex(&e, &input.schema()))
-                .collect::<Result<Vec<Expr>>>()?,
-            None => vec![],
-        };
+        let group_expr = group_by
+            .iter()
+            .map(|e| self.sql_to_rex(e, &input.schema()))
+            .collect::<Result<Vec<Expr>>>()?;
 
         let group_by_count = group_expr.len();
         let aggr_count = aggr_expr.len();
@@ -211,7 +230,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
     fn limit(
         &self,
         input: &LogicalPlan,
-        limit: &Option<Box<ASTNode>>,
+        limit: &Option<ASTExpr>,
     ) -> Result<LogicalPlan> {
         match *limit {
             Some(ref limit_expr) => {
@@ -231,54 +250,55 @@ impl<S: SchemaProvider> SqlToRel<S> {
     /// Wrap the logical in a sort
     fn order_by(
         &self,
-        group_by_plan: &LogicalPlan,
-        order_by: &Option<Vec<SQLOrderByExpr>>,
+        input: &LogicalPlan,
+        order_by_expr: Vec<OrderByExpr>,
     ) -> Result<LogicalPlan> {
-        match *order_by {
-            Some(ref order_by_expr) => {
-                let input_schema = group_by_plan.schema();
-                let order_by_rex: Result<Vec<Expr>> = order_by_expr
-                    .iter()
-                    .map(|e| {
-                        Ok(Expr::Sort {
-                            expr: Box::new(
-                                self.sql_to_rex(&e.expr, &input_schema).unwrap(),
-                            ),
-                            asc: e.asc,
-                            // by default nulls first to be consistent with spark
-                            nulls_first: e.nulls_first.unwrap_or(true),
-                        })
-                    })
-                    .collect();
-
-                LogicalPlanBuilder::from(&group_by_plan)
-                    .sort(order_by_rex?)?
-                    .build()
-            }
-            _ => Ok(group_by_plan.clone()),
+        if order_by_expr.len() < 1 {
+            Ok(input.clone())
         }
+
+        let input_schema = input.schema();
+        let order_by_rex: Result<Vec<Expr>> = order_by_expr
+            .iter()
+            .map(|e| {
+                Ok(Expr::Sort {
+                    expr: Box::new(
+                        self.sql_to_rex(&e.expr, &input_schema).unwrap(),
+                    ),
+                    asc: e.asc.unwrap(),
+                    // by default nulls first to be consistent with spark
+                    nulls_first: e.nulls_first.unwrap_or(true),
+                })
+            })
+            .collect();
+
+        LogicalPlanBuilder::from(&input)
+            .sort(order_by_rex?)?
+            .build()
     }
 
     /// Generate a relational expression from a SQL expression
-    pub fn sql_to_rex(&self, sql: &ASTNode, schema: &Schema) -> Result<Expr> {
-        match *sql {
-            ASTNode::SQLValue(sqlparser::sqlast::Value::Long(n)) => {
+    pub fn sql_to_rex(&self, expr: &ASTExpr, schema: &Schema) -> Result<Expr> {
+        match expr {
+            #[cfg(not(feature = "bigdecimal"))]
+            ASTExpr::Value(sqlparser::ast::Value::Number(String::from(n))) => {
                 Ok(Expr::Literal(ScalarValue::Int64(n)))
             }
-            ASTNode::SQLValue(sqlparser::sqlast::Value::Double(n)) => {
+            #[cfg(feature = "bigdecimal")]
+            ASTExpr::Value(sqlparser::ast::Value::Number(bigdecimal::BigDecimal::from(n))) => {
                 Ok(Expr::Literal(ScalarValue::Float64(n)))
             }
-            ASTNode::SQLValue(sqlparser::sqlast::Value::SingleQuotedString(ref s)) => {
+            ASTExpr::Value(sqlparser::ast::Value::SingleQuotedString(ref s)) => {
                 Ok(Expr::Literal(ScalarValue::Utf8(s.clone())))
             }
 
-            ASTNode::SQLAliasedExpr(ref expr, ref alias) => Ok(Alias(
-                Box::new(self.sql_to_rex(&expr, schema)?),
-                alias.to_owned(),
-            )),
+            // ASTExpr::AliasedExpr(ref expr, ref alias) => Ok(Alias(
+            //     Box::new(self.sql_to_rex(&expr, schema)?),
+            //     alias.to_owned(),
+            // )),
 
-            ASTNode::SQLIdentifier(ref id) => {
-                match schema.fields().iter().position(|c| c.name().eq(id)) {
+            ASTExpr::Identifier(ref id) => {
+                match schema.fields().iter().position(|c| c.name().eq(&id.value)) {
                     Some(index) => Ok(Expr::Column(index)),
                     None => Err(ExecutionError::ExecutionError(format!(
                         "Invalid identifier '{}' for schema {}",
@@ -288,9 +308,9 @@ impl<S: SchemaProvider> SqlToRel<S> {
                 }
             }
 
-            ASTNode::SQLWildcard => Ok(Expr::Wildcard),
+            ASTExpr::Wildcard => Ok(Expr::Wildcard),
 
-            ASTNode::SQLCast {
+            ASTExpr::Cast {
                 ref expr,
                 ref data_type,
             } => Ok(Expr::Cast {
@@ -298,19 +318,19 @@ impl<S: SchemaProvider> SqlToRel<S> {
                 data_type: convert_data_type(data_type)?,
             }),
 
-            ASTNode::SQLIsNull(ref expr) => {
+            ASTExpr::IsNull(ref expr) => {
                 Ok(Expr::IsNull(Box::new(self.sql_to_rex(expr, schema)?)))
             }
 
-            ASTNode::SQLIsNotNull(ref expr) => {
+            ASTExpr::IsNotNull(ref expr) => {
                 Ok(Expr::IsNotNull(Box::new(self.sql_to_rex(expr, schema)?)))
             }
 
-            ASTNode::SQLUnary {
-                ref operator,
+            ASTExpr::UnaryOp {
+                ref op,
                 ref expr,
-            } => match *operator {
-                SQLOperator::Not => {
+            } => match *op {
+                UnaryOperator::Not => {
                     Ok(Expr::Not(Box::new(self.sql_to_rex(expr, schema)?)))
                 }
                 _ => Err(ExecutionError::InternalError(format!(
@@ -318,49 +338,49 @@ impl<S: SchemaProvider> SqlToRel<S> {
                 ))),
             },
 
-            ASTNode::SQLBinaryExpr {
+            ASTExpr::BinaryOp {
                 ref left,
                 ref op,
                 ref right,
             } => {
-                let operator = match *op {
-                    SQLOperator::Gt => Operator::Gt,
-                    SQLOperator::GtEq => Operator::GtEq,
-                    SQLOperator::Lt => Operator::Lt,
-                    SQLOperator::LtEq => Operator::LtEq,
-                    SQLOperator::Eq => Operator::Eq,
-                    SQLOperator::NotEq => Operator::NotEq,
-                    SQLOperator::Plus => Operator::Plus,
-                    SQLOperator::Minus => Operator::Minus,
-                    SQLOperator::Multiply => Operator::Multiply,
-                    SQLOperator::Divide => Operator::Divide,
-                    SQLOperator::Modulus => Operator::Modulus,
-                    SQLOperator::And => Operator::And,
-                    SQLOperator::Or => Operator::Or,
-                    SQLOperator::Not => Operator::Not,
-                    SQLOperator::Like => Operator::Like,
-                    SQLOperator::NotLike => Operator::NotLike,
+                let operator = match op {
+                    BinaryOperator::Gt => Operator::Gt,
+                    BinaryOperator::GtEq => Operator::GtEq,
+                    BinaryOperator::Lt => Operator::Lt,
+                    BinaryOperator::LtEq => Operator::LtEq,
+                    BinaryOperator::Eq => Operator::Eq,
+                    BinaryOperator::NotEq => Operator::NotEq,
+                    BinaryOperator::Plus => Operator::Plus,
+                    BinaryOperator::Minus => Operator::Minus,
+                    BinaryOperator::Multiply => Operator::Multiply,
+                    BinaryOperator::Divide => Operator::Divide,
+                    BinaryOperator::Modulus => Operator::Modulus,
+                    BinaryOperator::And => Operator::And,
+                    BinaryOperator::Or => Operator::Or,
+                    //BinaryOperator::Not => Operator::Not,
+                    BinaryOperator::Like => Operator::Like,
+                    BinaryOperator::NotLike => Operator::NotLike,
+                    _ => {
+                        Err(ExecutionError::InternalError(format!(
+                            "SQL binary operator \"{:?}\" not found", op
+                        )))
+                    }
                 };
 
-                match operator {
-                    Operator::Not => Err(ExecutionError::InternalError(format!(
-                        "SQL unary operator \"NOT\" cannot be interpreted as a binary operator"
-                    ))),
-                    _ => Ok(Expr::BinaryExpr {
-                        left: Box::new(self.sql_to_rex(&left, &schema)?),
-                        op: operator,
-                        right: Box::new(self.sql_to_rex(&right, &schema)?),
-                    })
-                }
+                Ok(Expr::BinaryExpr {
+                    left: Box::new(self.sql_to_rex(&left, &schema)?),
+                    op: operator,
+                    right: Box::new(self.sql_to_rex(&right, &schema)?),
+                })
             }
 
             //            &ASTNode::SQLOrderBy { ref expr, asc } => Ok(Expr::Sort {
             //                expr: Box::new(self.sql_to_rex(&expr, &schema)?),
             //                asc,
             //            }),
-            ASTNode::SQLFunction { ref id, ref args } => {
+            ASTExpr::Function(Function { name, args, over, distinct }) => {
                 //TODO: fix this hack
-                match id.to_lowercase().as_ref() {
+                match name.to_lowercase().as_ref() {
                     "min" | "max" | "sum" | "avg" => {
                         let rex_args = args
                             .iter()
@@ -372,7 +392,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
                         let return_type = rex_args[0].get_type(schema)?.clone();
 
                         Ok(Expr::AggregateFunction {
-                            name: id.clone(),
+                            name: name.to_string(),
                             args: rex_args,
                             return_type,
                         })
@@ -381,10 +401,10 @@ impl<S: SchemaProvider> SqlToRel<S> {
                         let rex_args = args
                             .iter()
                             .map(|a| match a {
-                                ASTNode::SQLValue(sqlparser::sqlast::Value::Long(_)) => {
+                                ASTExpr::Value(sqlparser::ast::Value::Number(_)) => {
                                     Ok(Expr::Literal(ScalarValue::UInt8(1)))
                                 }
-                                ASTNode::SQLWildcard => {
+                                ASTExpr::Wildcard => {
                                     Ok(Expr::Literal(ScalarValue::UInt8(1)))
                                 }
                                 _ => self.sql_to_rex(a, schema),
@@ -392,12 +412,12 @@ impl<S: SchemaProvider> SqlToRel<S> {
                             .collect::<Result<Vec<Expr>>>()?;
 
                         Ok(Expr::AggregateFunction {
-                            name: id.clone(),
+                            name: name.to_string(),
                             args: rex_args,
                             return_type: DataType::UInt64,
                         })
                     }
-                    _ => match self.schema_provider.get_function_meta(id) {
+                    _ => match self.schema_provider.get_function_meta(name.to_string().as_str()) {
                         Some(fm) => {
                             let rex_args = args
                                 .iter()
@@ -413,14 +433,14 @@ impl<S: SchemaProvider> SqlToRel<S> {
                             }
 
                             Ok(Expr::ScalarFunction {
-                                name: id.clone(),
+                                name: name.to_string(),
                                 args: safe_args,
                                 return_type: fm.return_type().clone(),
                             })
                         }
                         _ => Err(ExecutionError::General(format!(
                             "Invalid function '{}'",
-                            id
+                            name
                         ))),
                     },
                 }
@@ -428,7 +448,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
             _ => Err(ExecutionError::General(format!(
                 "Unsupported ast node {:?} in sqltorel",
-                sql
+                expr
             ))),
         }
     }
@@ -443,16 +463,16 @@ fn is_aggregate_expr(e: &Expr) -> bool {
 }
 
 /// Convert SQL data type to relational representation of data type
-pub fn convert_data_type(sql: &SQLType) -> Result<DataType> {
+pub fn convert_data_type(sql: &ASTDataType) -> Result<DataType> {
     match sql {
-        SQLType::Boolean => Ok(DataType::Boolean),
-        SQLType::SmallInt => Ok(DataType::Int16),
-        SQLType::Int => Ok(DataType::Int32),
-        SQLType::BigInt => Ok(DataType::Int64),
-        SQLType::Float(_) | SQLType::Real => Ok(DataType::Float64),
-        SQLType::Double => Ok(DataType::Float64),
-        SQLType::Char(_) | SQLType::Varchar(_) => Ok(DataType::Utf8),
-        SQLType::Timestamp => Ok(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        ASTDataType::Boolean => Ok(DataType::Boolean),
+        ASTDataType::SmallInt => Ok(DataType::Int16),
+        ASTDataType::Int => Ok(DataType::Int32),
+        ASTDataType::BigInt => Ok(DataType::Int64),
+        ASTDataType::Float(_) | ASTDataType::Real => Ok(DataType::Float64),
+        ASTDataType::Double => Ok(DataType::Float64),
+        ASTDataType::Char(_) | ASTDataType::Varchar(_) => Ok(DataType::Utf8),
+        ASTDataType::Timestamp => Ok(DataType::Timestamp(TimeUnit::Nanosecond, None)),
         other => Err(ExecutionError::NotImplemented(format!(
             "Unsupported SQL type {:?}",
             other
@@ -462,7 +482,6 @@ pub fn convert_data_type(sql: &SQLType) -> Result<DataType> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::logicalplan::FunctionType;
     use sqlparser::sqlparser::*;
@@ -681,10 +700,11 @@ mod tests {
 
     fn logical_plan(sql: &str) -> Result<LogicalPlan> {
         use sqlparser::dialect::*;
+        use sqlparser::parser::Parser;
         let dialect = GenericSqlDialect {};
         let planner = SqlToRel::new(MockSchemaProvider {});
-        let ast = Parser::parse_sql(&dialect, sql.to_string()).unwrap();
-        planner.sql_to_rel(&ast)
+        let mut ast = Parser::parse_sql(&dialect, sql).unwrap();
+        planner.sql_to_rel(&ast.pop().unwrap())
     }
 
     /// Create logical plan, write with formatter, compare to expected output

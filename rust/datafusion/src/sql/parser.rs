@@ -72,7 +72,7 @@ pub struct DFParser {
 impl DFParser {
     /// Parse the specified tokens
     pub fn new(sql: String) -> Result<Self, ParserError> {
-        let dialect = GenericSqlDialect {};
+        let dialect = MysqlDialect {};
         let mut tokenizer = Tokenizer::new(&dialect, &sql);
         let tokens = tokenizer.tokenize()?;
         Ok(DFParser {

@@ -62,7 +62,7 @@ use crate::sql::{
 };
 use crate::table::Table;
 use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption, DataType as SQLDataType};
-use sqlparser::dialect::{Dialect, GenericDialect};
+use sqlparser::dialect::{GenericDialect};
 
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {

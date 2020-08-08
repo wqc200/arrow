@@ -281,13 +281,19 @@ impl<S: SchemaProvider> SqlToRel<S> {
             },
             SQLExpr::Value(Value::SingleQuotedString(ref s)) => Ok(lit(s.clone())),
 
-            SQLExpr::Identifier(ref id) => match schema.field_with_name(&id.value) {
-                Ok(field) => Ok(Expr::Column(field.name().clone())),
-                Err(_) => Err(ExecutionError::ExecutionError(format!(
-                    "Invalid identifier '{}' for schema {}",
-                    id,
-                    schema.to_string()
-                ))),
+            SQLExpr::Identifier(ref id) => {
+                if &id.value[0..1] == "@" {
+                    Ok(Expr::Variable(id.value.clone()))
+                } else {
+                    match schema.field_with_name(&id.value) {
+                        Ok(field) => Ok(Expr::Column(field.name().clone())),
+                        Err(_) => Err(ExecutionError::ExecutionError(format!(
+                            "Invalid identifier '{}' for schema {}",
+                            id,
+                            schema.to_string()
+                        ))),
+                    }
+                }
             },
 
             SQLExpr::Wildcard => Ok(Expr::Wildcard),

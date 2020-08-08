@@ -267,6 +267,7 @@ pub fn expr_to_field(e: &Expr, input_schema: &Schema) -> Result<Field> {
     let data_type = match e {
         Expr::Alias(expr, ..) => expr.get_type(input_schema),
         Expr::Column(name) => Ok(input_schema.field_with_name(name)?.data_type().clone()),
+        Expr::Variable(variable) => {Ok(DataType::Utf8)},
         Expr::Literal(ref lit) => Ok(lit.get_datatype()),
         Expr::ScalarFunction {
             ref return_type, ..
@@ -310,6 +311,8 @@ pub enum Expr {
     Alias(Box<Expr>, String),
     /// column of a table scan
     Column(String),
+    /// variable like @@version
+    Variable(String),
     /// literal value
     Literal(ScalarValue),
     /// binary expression e.g. "age > 21"
@@ -371,6 +374,7 @@ impl Expr {
         match self {
             Expr::Alias(expr, _) => expr.get_type(schema),
             Expr::Column(name) => Ok(schema.field_with_name(name)?.data_type().clone()),
+            Expr::Variable(_) => Ok(DataType::Utf8),
             Expr::Literal(l) => Ok(l.get_datatype()),
             Expr::Cast { data_type, .. } => Ok(data_type.clone()),
             Expr::ScalarFunction { return_type, .. } => Ok(return_type.clone()),
@@ -597,6 +601,7 @@ impl fmt::Debug for Expr {
         match self {
             Expr::Alias(expr, alias) => write!(f, "{:?} AS {}", expr, alias),
             Expr::Column(name) => write!(f, "#{}", name),
+            Expr::Variable(variable) => write!(f, "#{}", variable),
             Expr::Literal(v) => write!(f, "{:?}", v),
             Expr::Cast { expr, data_type } => {
                 write!(f, "CAST({:?} AS {:?})", expr, data_type)

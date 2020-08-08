@@ -510,6 +510,9 @@ impl ExecutionContext {
                 input_schema.field_with_name(&name)?;
                 Ok(Arc::new(Column::new(name)))
             }
+            Expr::Variable(variable) => {
+                
+            }
             Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
             Expr::BinaryExpr { left, op, right } => Ok(Arc::new(BinaryExpr::new(
                 self.create_physical_expr(left, input_schema)?,

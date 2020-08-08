@@ -74,7 +74,6 @@ pub struct DFParser {
 impl DFParser {
     /// Parse the specified tokens
     pub fn new(sql: &str, dialect: &dyn Dialect) -> Result<Self, ParserError> {
-        //let dialect = GenericDialect {};
         let mut tokenizer = Tokenizer::new(dialect, sql);
         let tokens = tokenizer.tokenize()?;
         Ok(DFParser {

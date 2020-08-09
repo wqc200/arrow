@@ -64,6 +64,7 @@ use crate::table::Table;
 use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption, DataType as SQLDataType};
 use sqlparser::dialect::{GenericDialect};
 
+#[cfg(test)]
 use crate::test::variable_expr::{ScalarVariable, create_table_dual};
 
 /// Execution context for registering data sources and executing queries

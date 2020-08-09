@@ -51,7 +51,7 @@ impl ScalarVariable {
 }
 
 impl VariableExpr for ScalarVariable {
-    fn get_value(&self, variable_name: String) -> Result<ScalarValue> {
+    fn get_value(&self, variable_names: Vec<String>) -> Result<ScalarValue> {
         Ok(ScalarValue::Utf8("test".to_string()))
     }
 }

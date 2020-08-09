@@ -230,7 +230,7 @@ fn create_name(e: &Expr, input_schema: &Schema) -> Result<String> {
     match e {
         Expr::Alias(_, name) => Ok(name.clone()),
         Expr::Column(name) => Ok(name.clone()),
-        Expr::ScalarVariable(variable_name) => Ok(variable_name.clone()),
+        Expr::ScalarVariable(variable_names) => Ok(variable_names.join(".")),
         Expr::Literal(value) => Ok(format!("{:?}", value)),
         Expr::BinaryExpr { left, op, right } => {
             let left = create_name(left, input_schema)?;
@@ -313,7 +313,7 @@ pub enum Expr {
     /// column of a table scan
     Column(String),
     /// scalar variable like @@version
-    ScalarVariable(String),
+    ScalarVariable(Vec<String>),
     /// literal value
     Literal(ScalarValue),
     /// binary expression e.g. "age > 21"
@@ -602,7 +602,7 @@ impl fmt::Debug for Expr {
         match self {
             Expr::Alias(expr, alias) => write!(f, "{:?} AS {}", expr, alias),
             Expr::Column(name) => write!(f, "#{}", name),
-            Expr::ScalarVariable(variable) => write!(f, "#{}", variable),
+            Expr::ScalarVariable(variable_names) => write!(f, "#{}", variable_names.join(".")),
             Expr::Literal(v) => write!(f, "{:?}", v),
             Expr::Cast { expr, data_type } => {
                 write!(f, "CAST({:?} AS {:?})", expr, data_type)

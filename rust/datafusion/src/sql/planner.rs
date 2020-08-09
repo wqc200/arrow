@@ -283,7 +283,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
             SQLExpr::Identifier(ref id) => {
                 if &id.value[0..1] == "@" {
-                    Ok(Expr::ScalarVariable(id.value.clone()))
+                    Ok(Expr::ScalarVariable(vec![id.value.clone()]))
                 } else {
                     match schema.field_with_name(&id.value) {
                         Ok(field) => Ok(Expr::Column(field.name().clone())),
@@ -295,6 +295,23 @@ impl<S: SchemaProvider> SqlToRel<S> {
                     }
                 }
             },
+
+            SQLExpr::CompoundIdentifier(ids) => {
+                let mut variable_names = vec![];
+                for i in 0..ids.len() {
+                    let id = ids[i].clone();
+                    variable_names.push(id.value);
+                }
+                if &variable_names[0][0..1] == "@" {
+                    Ok(Expr::ScalarVariable(variable_names))
+                } else {
+                    Err(ExecutionError::ExecutionError(format!(
+                        "Invalid compound identifier '{:?}' for schema {}",
+                        variable_names,
+                        schema.to_string()
+                    )))
+                }
+            }
 
             SQLExpr::Wildcard => Ok(Expr::Wildcard),
 

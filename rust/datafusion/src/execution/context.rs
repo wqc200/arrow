@@ -520,9 +520,9 @@ impl ExecutionContext {
                 input_schema.field_with_name(&name)?;
                 Ok(Arc::new(Column::new(name)))
             }
-            Expr::ScalarVariable(variable_name) => match &self.variable_expr {
+            Expr::ScalarVariable(variable_names) => match &self.variable_expr {
                 Some(variable_expr) => {
-                    let scalar_value = variable_expr.get_value(variable_name.to_string())?;
+                    let scalar_value = variable_expr.get_value(variable_names.clone())?;
                     Ok(Arc::new(Literal::new(scalar_value)))
                 }
                 _ => Err(ExecutionError::General(format!(

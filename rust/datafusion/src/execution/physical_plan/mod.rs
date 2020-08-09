@@ -43,7 +43,7 @@ pub trait Partition: Send + Sync {
 }
 
 pub trait VariableExpr: Send + Sync {
-    fn get_value(&self, variable_name: String) -> Result<ScalarValue>;
+    fn get_value(&self, variable_names: Vec<String>) -> Result<ScalarValue>;
 }
 
 /// Expression that can be evaluated against a RecordBatch

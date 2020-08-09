@@ -42,6 +42,10 @@ pub trait Partition: Send + Sync {
     fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>>;
 }
 
+pub trait VariableExpr: Send + Sync {
+    fn get_value(&self, variable_name: String) -> Result<ScalarValue>;
+}
+
 /// Expression that can be evaluated against a RecordBatch
 /// A Physical expression knows its type, nullability and how to evaluate itself.
 pub trait PhysicalExpr: Send + Sync + Display {

@@ -263,7 +263,8 @@ mod tests {
     use sqlparser::ast::{DataType, Ident};
 
     fn expect_parse_ok(sql: &str, expected: Statement) -> Result<(), ParserError> {
-        let statements = DFParser::parse_sql(sql)?;
+        let dialect = &GenericDialect {};
+        let statements = DFParser::parse_sql(sql, dialect)?;
         assert_eq!(
             statements.len(),
             1,
@@ -275,7 +276,8 @@ mod tests {
 
     /// Parses sql and asserts that the expected error message was found
     fn expect_parse_error(sql: &str, expected_error: &str) -> Result<(), ParserError> {
-        match DFParser::parse_sql(sql) {
+        let dialect = &GenericDialect {};
+        match DFParser::parse_sql(sql, dialect) {
             Ok(statements) => {
                 assert!(
                     false,

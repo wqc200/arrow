@@ -48,7 +48,7 @@ use crate::execution::physical_plan::projection::ProjectionExec;
 use crate::execution::physical_plan::selection::SelectionExec;
 use crate::execution::physical_plan::sort::{SortExec, SortOptions};
 use crate::execution::physical_plan::udf::{ScalarFunction, ScalarFunctionExpr};
-use crate::execution::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr};
+use crate::execution::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr, VariableExpr};
 use crate::execution::table_impl::TableImpl;
 use crate::logicalplan::{
     Expr, FunctionMeta, FunctionType, LogicalPlan, LogicalPlanBuilder,
@@ -64,10 +64,13 @@ use crate::table::Table;
 use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption, DataType as SQLDataType};
 use sqlparser::dialect::{GenericDialect};
 
+use crate::test::variable_expr::{ScalarVariable, create_table_dual};
+
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {
     datasources: HashMap<String, Box<dyn TableProvider + Send + Sync>>,
     scalar_functions: HashMap<String, Box<ScalarFunction>>,
+    variable_expr: Option<Box<dyn VariableExpr + Send + Sync>>,
 }
 
 fn tuple_err<T, R>(value: (Result<T>, Result<R>)) -> Result<(T, R)> {
@@ -85,6 +88,7 @@ impl ExecutionContext {
         let mut ctx = Self {
             datasources: HashMap::new(),
             scalar_functions: HashMap::new(),
+            variable_expr: None,
         };
         register_math_functions(&mut ctx);
         ctx
@@ -185,6 +189,11 @@ impl ExecutionContext {
                 })
             }
         }
+    }
+
+    /// Register variable expr
+    pub fn register_variable_expr(&mut self, variable_expr: Box<dyn VariableExpr + Send + Sync>) {
+        self.variable_expr = Option::from(variable_expr);
     }
 
     /// Register a scalar UDF
@@ -510,9 +519,15 @@ impl ExecutionContext {
                 input_schema.field_with_name(&name)?;
                 Ok(Arc::new(Column::new(name)))
             }
-            Expr::Variable(variable) => {
-                
-            }
+            Expr::ScalarVariable(variable_name) => match &self.variable_expr {
+                Some(variable_expr) => {
+                    let scalar_value = variable_expr.get_value(variable_name.to_string())?;
+                    Ok(Arc::new(Literal::new(scalar_value)))
+                }
+                _ => Err(ExecutionError::General(format!(
+                    "No variable expr found"
+                ))),
+            },
             Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
             Expr::BinaryExpr { left, op, right } => Ok(Arc::new(BinaryExpr::new(
                 self.create_physical_expr(left, input_schema)?,
@@ -717,7 +732,7 @@ mod tests {
     use crate::execution::physical_plan::udf::ScalarUdf;
     use crate::logicalplan::{aggregate_expr, col, scalar_function};
     use crate::test;
-    use arrow::array::{ArrayRef, Int32Array};
+    use arrow::array::{ArrayRef, Int32Array, StringArray};
     use arrow::compute::add;
     use std::fs::File;
     use std::io::prelude::*;
@@ -762,6 +777,42 @@ mod tests {
 
         let row_count: usize = results.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(row_count, 20);
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_variable_expr() -> Result<()> {
+        let tmp_dir = TempDir::new("variable_expr")?;
+        let partition_count = 4;
+        let mut ctx = create_ctx(&tmp_dir, partition_count)?;
+
+        let variable_expr = ScalarVariable::new();
+        ctx.register_variable_expr(Box::new(variable_expr));
+
+        let provider = create_table_dual();
+        ctx.register_table("dual", provider);
+
+        let results = collect(&mut ctx, "SELECT @@version, @name FROM dual")?;
+
+        let batch = &results[0];
+        assert_eq!(2, batch.num_columns());
+        assert_eq!(1, batch.num_rows());
+        assert_eq!(field_names(batch), vec!["@@version", "@name"]);
+
+        let a = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("failed to cast a");
+        assert_eq!(a.value(0), "test");
+
+        let b = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("failed to cast a");
+        assert_eq!(b.value(0), "test");
 
         Ok(())
     }

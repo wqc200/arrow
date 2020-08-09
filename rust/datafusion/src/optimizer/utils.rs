@@ -45,8 +45,8 @@ pub fn expr_to_column_names(expr: &Expr, accum: &mut HashSet<String>) -> Result<
             accum.insert(name.clone());
             Ok(())
         }
-        Expr::Variable(variable) => {
-            accum.insert(variable.clone());
+        Expr::ScalarVariable(variable_name) => {
+            accum.insert(variable_name.clone());
             Ok(())
         }
         Expr::Literal(_) => {

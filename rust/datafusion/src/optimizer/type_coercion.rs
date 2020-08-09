@@ -127,7 +127,7 @@ impl<'a> TypeCoercionRule<'a> {
             }),
             Expr::Cast { .. } => Ok(expr.clone()),
             Expr::Column(_) => Ok(expr.clone()),
-            Expr::Variable(_) => Ok(expr.clone()),
+            Expr::ScalarVariable(_) => Ok(expr.clone()),
             Expr::Alias(expr, alias) => Ok(Expr::Alias(
                 Box::new(self.rewrite_expr(expr, schema)?),
                 alias.to_owned(),

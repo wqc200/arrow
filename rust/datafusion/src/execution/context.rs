@@ -452,6 +452,15 @@ impl ExecutionContext {
                 input_schema.field_with_name(&name)?;
                 Ok(Arc::new(Column::new(name)))
             }
+            Expr::ScalarVariable(variable_names) => match &self.variable_expr {
+                Some(variable_expr) => {
+                    let scalar_value = variable_expr.get_value(variable_names.clone())?;
+                    Ok(Arc::new(Literal::new(scalar_value)))
+                }
+                _ => Err(ExecutionError::General(format!(
+                    "No variable expr found"
+                ))),
+            },
             Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
             Expr::BinaryExpr { left, op, right } => Ok(Arc::new(BinaryExpr::new(
                 self.create_physical_expr(left, input_schema)?,
@@ -701,6 +710,42 @@ mod tests {
 
         let row_count: usize = results.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(row_count, 20);
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_variable_expr() -> Result<()> {
+        let tmp_dir = TempDir::new("variable_expr")?;
+        let partition_count = 4;
+        let mut ctx = create_ctx(&tmp_dir, partition_count)?;
+
+        let variable_expr = ScalarVariable::new();
+        ctx.register_variable_expr(Box::new(variable_expr));
+
+        let provider = create_table_dual();
+        ctx.register_table("dual", provider);
+
+        let results = collect(&mut ctx, "SELECT @@version, @name FROM dual")?;
+
+        let batch = &results[0];
+        assert_eq!(2, batch.num_columns());
+        assert_eq!(1, batch.num_rows());
+        assert_eq!(field_names(batch), vec!["@@version", "@name"]);
+
+        let a = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("failed to cast a");
+        assert_eq!(a.value(0), "test");
+
+        let b = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("failed to cast a");
+        assert_eq!(b.value(0), "test");
 
         Ok(())
     }

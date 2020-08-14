@@ -49,6 +49,7 @@ use arrow::datatypes::{DataType, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 
 /// Represents the column at a given index in a RecordBatch
+#[derive(Debug)]
 pub struct Column {
     name: String,
 }
@@ -94,6 +95,7 @@ pub fn col(name: &str) -> Arc<dyn PhysicalExpr> {
 }
 
 /// SUM aggregate expression
+#[derive(Debug)]
 pub struct Sum {
     expr: Arc<dyn PhysicalExpr>,
 }
@@ -152,6 +154,7 @@ macro_rules! sum_accumulate {
     }};
 }
 
+#[derive(Debug)]
 struct SumAccumulator {
     sum: Option<ScalarValue>,
 }
@@ -286,6 +289,7 @@ pub fn sum(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
 }
 
 /// AVG aggregate expression
+#[derive(Debug)]
 pub struct Avg {
     expr: Arc<dyn PhysicalExpr>,
 }
@@ -347,6 +351,7 @@ macro_rules! avg_accumulate {
         };
     }};
 }
+#[derive(Debug)]
 struct AvgAccumulator {
     sum: Option<f64>,
     count: Option<i64>,
@@ -400,6 +405,7 @@ pub fn avg(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
 }
 
 /// MAX aggregate expression
+#[derive(Debug)]
 pub struct Max {
     expr: Arc<dyn PhysicalExpr>,
 }
@@ -413,20 +419,7 @@ impl Max {
 
 impl AggregateExpr for Max {
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
-        match self.expr.data_type(input_schema)? {
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                Ok(DataType::Int64)
-            }
-            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                Ok(DataType::UInt64)
-            }
-            DataType::Float32 => Ok(DataType::Float32),
-            DataType::Float64 => Ok(DataType::Float64),
-            other => Err(ExecutionError::General(format!(
-                "MAX does not support {:?}",
-                other
-            ))),
-        }
+        self.expr.data_type(input_schema)
     }
 
     fn evaluate_input(&self, batch: &RecordBatch) -> Result<ArrayRef> {
@@ -443,13 +436,13 @@ impl AggregateExpr for Max {
 }
 
 macro_rules! max_accumulate {
-    ($SELF:ident, $VALUE:expr, $ARRAY_TYPE:ident, $SCALAR_VARIANT:ident, $TY:ty) => {{
+    ($SELF:ident, $VALUE:expr, $ARRAY_TYPE:ident, $SCALAR_VARIANT:ident) => {{
         $SELF.max = match $SELF.max {
             Some(ScalarValue::$SCALAR_VARIANT(n)) => {
-                if n > ($VALUE as $TY) {
+                if n > ($VALUE) {
                     Some(ScalarValue::$SCALAR_VARIANT(n))
                 } else {
-                    Some(ScalarValue::$SCALAR_VARIANT($VALUE as $TY))
+                    Some(ScalarValue::$SCALAR_VARIANT($VALUE))
                 }
             }
             Some(_) => {
@@ -457,10 +450,11 @@ macro_rules! max_accumulate {
                     "Unexpected ScalarValue variant".to_string(),
                 ))
             }
-            None => Some(ScalarValue::$SCALAR_VARIANT($VALUE as $TY)),
+            None => Some(ScalarValue::$SCALAR_VARIANT($VALUE)),
         };
     }};
 }
+#[derive(Debug)]
 struct MaxAccumulator {
     max: Option<ScalarValue>,
 }
@@ -470,34 +464,34 @@ impl Accumulator for MaxAccumulator {
         if let Some(value) = value {
             match value {
                 ScalarValue::Int8(value) => {
-                    max_accumulate!(self, value, Int8Array, Int64, i64);
+                    max_accumulate!(self, value, Int8Array, Int8);
                 }
                 ScalarValue::Int16(value) => {
-                    max_accumulate!(self, value, Int16Array, Int64, i64)
+                    max_accumulate!(self, value, Int16Array, Int16)
                 }
                 ScalarValue::Int32(value) => {
-                    max_accumulate!(self, value, Int32Array, Int64, i64)
+                    max_accumulate!(self, value, Int32Array, Int32)
                 }
                 ScalarValue::Int64(value) => {
-                    max_accumulate!(self, value, Int64Array, Int64, i64)
+                    max_accumulate!(self, value, Int64Array, Int64)
                 }
                 ScalarValue::UInt8(value) => {
-                    max_accumulate!(self, value, UInt8Array, UInt64, u64)
+                    max_accumulate!(self, value, UInt8Array, UInt8)
                 }
                 ScalarValue::UInt16(value) => {
-                    max_accumulate!(self, value, UInt16Array, UInt64, u64)
+                    max_accumulate!(self, value, UInt16Array, UInt16)
                 }
                 ScalarValue::UInt32(value) => {
-                    max_accumulate!(self, value, UInt32Array, UInt64, u64)
+                    max_accumulate!(self, value, UInt32Array, UInt32)
                 }
                 ScalarValue::UInt64(value) => {
-                    max_accumulate!(self, value, UInt64Array, UInt64, u64)
+                    max_accumulate!(self, value, UInt64Array, UInt64)
                 }
                 ScalarValue::Float32(value) => {
-                    max_accumulate!(self, value, Float32Array, Float32, f32)
+                    max_accumulate!(self, value, Float32Array, Float32)
                 }
                 ScalarValue::Float64(value) => {
-                    max_accumulate!(self, value, Float64Array, Float64, f64)
+                    max_accumulate!(self, value, Float64Array, Float64)
                 }
                 other => {
                     return Err(ExecutionError::General(format!(
@@ -595,6 +589,7 @@ pub fn max(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
 }
 
 /// MIN aggregate expression
+#[derive(Debug)]
 pub struct Min {
     expr: Arc<dyn PhysicalExpr>,
 }
@@ -608,20 +603,7 @@ impl Min {
 
 impl AggregateExpr for Min {
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
-        match self.expr.data_type(input_schema)? {
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                Ok(DataType::Int64)
-            }
-            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
-                Ok(DataType::UInt64)
-            }
-            DataType::Float32 => Ok(DataType::Float32),
-            DataType::Float64 => Ok(DataType::Float64),
-            other => Err(ExecutionError::General(format!(
-                "MIN does not support {:?}",
-                other
-            ))),
-        }
+        self.expr.data_type(input_schema)
     }
 
     fn evaluate_input(&self, batch: &RecordBatch) -> Result<ArrayRef> {
@@ -638,13 +620,13 @@ impl AggregateExpr for Min {
 }
 
 macro_rules! min_accumulate {
-    ($SELF:ident, $VALUE:expr, $ARRAY_TYPE:ident, $SCALAR_VARIANT:ident, $TY:ty) => {{
+    ($SELF:ident, $VALUE:expr, $ARRAY_TYPE:ident, $SCALAR_VARIANT:ident) => {{
         $SELF.min = match $SELF.min {
             Some(ScalarValue::$SCALAR_VARIANT(n)) => {
-                if n < ($VALUE as $TY) {
+                if n < ($VALUE) {
                     Some(ScalarValue::$SCALAR_VARIANT(n))
                 } else {
-                    Some(ScalarValue::$SCALAR_VARIANT($VALUE as $TY))
+                    Some(ScalarValue::$SCALAR_VARIANT($VALUE))
                 }
             }
             Some(_) => {
@@ -652,10 +634,11 @@ macro_rules! min_accumulate {
                     "Unexpected ScalarValue variant".to_string(),
                 ))
             }
-            None => Some(ScalarValue::$SCALAR_VARIANT($VALUE as $TY)),
+            None => Some(ScalarValue::$SCALAR_VARIANT($VALUE)),
         };
     }};
 }
+#[derive(Debug)]
 struct MinAccumulator {
     min: Option<ScalarValue>,
 }
@@ -665,34 +648,34 @@ impl Accumulator for MinAccumulator {
         if let Some(value) = value {
             match value {
                 ScalarValue::Int8(value) => {
-                    min_accumulate!(self, value, Int8Array, Int64, i64);
+                    min_accumulate!(self, value, Int8Array, Int8);
                 }
                 ScalarValue::Int16(value) => {
-                    min_accumulate!(self, value, Int16Array, Int64, i64)
+                    min_accumulate!(self, value, Int16Array, Int16)
                 }
                 ScalarValue::Int32(value) => {
-                    min_accumulate!(self, value, Int32Array, Int64, i64)
+                    min_accumulate!(self, value, Int32Array, Int32)
                 }
                 ScalarValue::Int64(value) => {
-                    min_accumulate!(self, value, Int64Array, Int64, i64)
+                    min_accumulate!(self, value, Int64Array, Int64)
                 }
                 ScalarValue::UInt8(value) => {
-                    min_accumulate!(self, value, UInt8Array, UInt64, u64)
+                    min_accumulate!(self, value, UInt8Array, UInt8)
                 }
                 ScalarValue::UInt16(value) => {
-                    min_accumulate!(self, value, UInt16Array, UInt64, u64)
+                    min_accumulate!(self, value, UInt16Array, UInt16)
                 }
                 ScalarValue::UInt32(value) => {
-                    min_accumulate!(self, value, UInt32Array, UInt64, u64)
+                    min_accumulate!(self, value, UInt32Array, UInt32)
                 }
                 ScalarValue::UInt64(value) => {
-                    min_accumulate!(self, value, UInt64Array, UInt64, u64)
+                    min_accumulate!(self, value, UInt64Array, UInt64)
                 }
                 ScalarValue::Float32(value) => {
-                    min_accumulate!(self, value, Float32Array, Float32, f32)
+                    min_accumulate!(self, value, Float32Array, Float32)
                 }
                 ScalarValue::Float64(value) => {
-                    min_accumulate!(self, value, Float64Array, Float64, f64)
+                    min_accumulate!(self, value, Float64Array, Float64)
                 }
                 other => {
                     return Err(ExecutionError::General(format!(
@@ -791,6 +774,7 @@ pub fn min(expr: Arc<dyn PhysicalExpr>) -> Arc<dyn AggregateExpr> {
 
 /// COUNT aggregate expression
 /// Returns the amount of non-null values of the given expression.
+#[derive(Debug)]
 pub struct Count {
     expr: Arc<dyn PhysicalExpr>,
 }
@@ -820,6 +804,7 @@ impl AggregateExpr for Count {
     }
 }
 
+#[derive(Debug)]
 struct CountAccumulator {
     count: u64,
 }
@@ -955,6 +940,7 @@ macro_rules! boolean_op {
     }};
 }
 /// Binary expression
+#[derive(Debug)]
 pub struct BinaryExpr {
     left: Arc<dyn PhysicalExpr>,
     op: Operator,
@@ -1051,6 +1037,7 @@ pub fn binary(
 }
 
 /// Not expression
+#[derive(Debug)]
 pub struct NotExpr {
     arg: Arc<dyn PhysicalExpr>,
 }
@@ -1099,6 +1086,7 @@ pub fn not(arg: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
 }
 
 /// CAST expression casts an expression to a specific data type
+#[derive(Debug)]
 pub struct CastExpr {
     /// The expression to cast
     expr: Arc<dyn PhysicalExpr>,
@@ -1166,6 +1154,7 @@ impl PhysicalExpr for CastExpr {
 }
 
 /// Represents a non-null literal value
+#[derive(Debug)]
 pub struct Literal {
     value: ScalarValue,
 }
@@ -1197,7 +1186,7 @@ impl fmt::Display for Literal {
 
 impl PhysicalExpr for Literal {
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
-        Ok(self.value.get_datatype())
+        self.value.get_datatype()
     }
 
     fn nullable(&self, _input_schema: &Schema) -> Result<bool> {
@@ -1252,7 +1241,7 @@ pub fn lit(value: ScalarValue) -> Arc<dyn PhysicalExpr> {
 }
 
 /// Represents Sort operation for a column in a RecordBatch
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PhysicalSortExpr {
     /// Physical expression representing the column to sort
     pub expr: Arc<dyn PhysicalExpr>,
@@ -1433,13 +1422,9 @@ mod tests {
     #[test]
     fn invalid_cast() -> Result<()> {
         let schema = Schema::new(vec![Field::new("a", DataType::Utf8, false)]);
-        match CastExpr::try_new(col("a"), &schema, DataType::Int32) {
-            Err(ExecutionError::General(ref str)) => {
-                assert_eq!(str, "Invalid CAST from Utf8 to Int32");
-                Ok(())
-            }
-            _ => panic!(),
-        }
+        let result = CastExpr::try_new(col("a"), &schema, DataType::Int32);
+        result.expect_err("Invalid CAST from Utf8 to Int32");
+        Ok(())
     }
 
     #[test]
@@ -1466,7 +1451,7 @@ mod tests {
         let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
 
         let max = max(col("a"));
-        assert_eq!(DataType::Int64, max.data_type(&schema)?);
+        assert_eq!(DataType::Int32, max.data_type(&schema)?);
 
         // after the aggr expression is applied, the schema changes to:
         let schema = Schema::new(vec![
@@ -1475,7 +1460,7 @@ mod tests {
         ]);
 
         let combiner = max.create_reducer("Max(a)");
-        assert_eq!(DataType::Int64, combiner.data_type(&schema)?);
+        assert_eq!(DataType::Int32, combiner.data_type(&schema)?);
 
         Ok(())
     }
@@ -1485,7 +1470,7 @@ mod tests {
         let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
 
         let min = min(col("a"));
-        assert_eq!(DataType::Int64, min.data_type(&schema)?);
+        assert_eq!(DataType::Int32, min.data_type(&schema)?);
 
         // after the aggr expression is applied, the schema changes to:
         let schema = Schema::new(vec![
@@ -1493,7 +1478,7 @@ mod tests {
             Field::new("MIN(a)", min.data_type(&schema)?, false),
         ]);
         let combiner = min.create_reducer("MIN(a)");
-        assert_eq!(DataType::Int64, combiner.data_type(&schema)?);
+        assert_eq!(DataType::Int32, combiner.data_type(&schema)?);
 
         Ok(())
     }
@@ -1547,7 +1532,7 @@ mod tests {
         let a = Int32Array::from(vec![1, 2, 3, 4, 5]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_max(&batch)?, Some(ScalarValue::Int64(5)));
+        assert_eq!(do_max(&batch)?, Some(ScalarValue::Int32(5)));
 
         Ok(())
     }
@@ -1559,7 +1544,7 @@ mod tests {
         let a = Int32Array::from(vec![1, 2, 3, 4, 5]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_min(&batch)?, Some(ScalarValue::Int64(1)));
+        assert_eq!(do_min(&batch)?, Some(ScalarValue::Int32(1)));
 
         Ok(())
     }
@@ -1595,7 +1580,7 @@ mod tests {
         let a = Int32Array::from(vec![Some(1), None, Some(3), Some(4), Some(5)]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_max(&batch)?, Some(ScalarValue::Int64(5)));
+        assert_eq!(do_max(&batch)?, Some(ScalarValue::Int32(5)));
 
         Ok(())
     }
@@ -1607,7 +1592,7 @@ mod tests {
         let a = Int32Array::from(vec![Some(1), None, Some(3), Some(4), Some(5)]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_min(&batch)?, Some(ScalarValue::Int64(1)));
+        assert_eq!(do_min(&batch)?, Some(ScalarValue::Int32(1)));
 
         Ok(())
     }
@@ -1691,7 +1676,7 @@ mod tests {
         let a = UInt32Array::from(vec![1_u32, 2_u32, 3_u32, 4_u32, 5_u32]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_max(&batch)?, Some(ScalarValue::UInt64(5_u64)));
+        assert_eq!(do_max(&batch)?, Some(ScalarValue::UInt32(5_u32)));
 
         Ok(())
     }
@@ -1703,7 +1688,7 @@ mod tests {
         let a = UInt32Array::from(vec![1_u32, 2_u32, 3_u32, 4_u32, 5_u32]);
         let batch = RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(a)])?;
 
-        assert_eq!(do_min(&batch)?, Some(ScalarValue::UInt64(1_u64)));
+        assert_eq!(do_min(&batch)?, Some(ScalarValue::UInt32(1_u32)));
 
         Ok(())
     }

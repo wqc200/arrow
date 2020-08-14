@@ -15,31 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// This header needs to be included multiple times.
+#[macro_use]
+extern crate criterion;
+use criterion::Criterion;
 
-#ifdef _WIN32
+extern crate arrow;
 
-// The Windows API defines macros from *File resolving to either
-// *FileA or *FileW.  Need to undo them.
-#ifdef CopyFile
-#undef CopyFile
-#endif
-#ifdef CreateFile
-#undef CreateFile
-#endif
-#ifdef DeleteFile
-#undef DeleteFile
-#endif
+use arrow::array::*;
+use arrow::compute::kernels::length::length;
 
-// Other annoying Windows macro definitions...
-#ifdef IN
-#undef IN
-#endif
-#ifdef OUT
-#undef OUT
-#endif
+fn bench_length() {
+    fn double_vec<T: Clone>(v: Vec<T>) -> Vec<T> {
+        [&v[..], &v[..]].concat()
+    }
 
-// Note that we can't undefine OPTIONAL, because it can be used in other
-// Windows headers...
+    // double ["hello", " ", "world", "!"] 10 times
+    let mut values = vec!["one", "on", "o", ""];
+    let mut expected = vec![3, 2, 1, 0];
+    for _ in 0..10 {
+        values = double_vec(values);
+        expected = double_vec(expected);
+    }
+    let array = StringArray::from(values);
 
-#endif  // _WIN32
+    criterion::black_box(length(&array).unwrap());
+}
+
+fn add_benchmark(c: &mut Criterion) {
+    c.bench_function("length", |b| b.iter(|| bench_length()));
+}
+
+criterion_group!(benches, add_benchmark);
+criterion_main!(benches);

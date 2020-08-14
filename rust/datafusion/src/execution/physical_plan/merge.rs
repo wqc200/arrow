@@ -18,7 +18,7 @@
 //! Defines the merge plan for executing partitions in parallel and then merging the results
 //! into a single partition
 
-use crate::error::Result;
+use crate::error::{ExecutionError, Result};
 use crate::execution::physical_plan::common::RecordBatchIterator;
 use crate::execution::physical_plan::Partition;
 use crate::execution::physical_plan::{common, ExecutionPlan};
@@ -30,6 +30,7 @@ use std::thread::JoinHandle;
 
 /// Merge execution plan executes partitions in parallel and combines them into a single
 /// partition. No guarantees are made about the order of the resulting partition.
+#[derive(Debug)]
 pub struct MergeExec {
     /// Input schema
     schema: SchemaRef,
@@ -57,6 +58,7 @@ impl ExecutionPlan for MergeExec {
     }
 }
 
+#[derive(Debug)]
 struct MergePartition {
     /// Input schema
     schema: SchemaRef,
@@ -81,11 +83,14 @@ impl Partition for MergePartition {
         // combine the results from each thread
         let mut combined_results: Vec<Arc<RecordBatch>> = vec![];
         for thread in threads {
-            let join = thread.join().expect("Failed to join thread");
-            let result = join?;
-            result
-                .iter()
-                .for_each(|batch| combined_results.push(Arc::new(batch.clone())));
+            match thread.join() {
+                Ok(join) => {
+                    join?
+                        .iter()
+                        .for_each(|batch| combined_results.push(Arc::new(batch.clone())));
+                }
+                Err(e) => return Err(ExecutionError::General(format!("{:?}", e))),
+            }
         }
 
         Ok(Arc::new(Mutex::new(RecordBatchIterator::new(

@@ -17,25 +17,33 @@
 
 //! ExecutionPlan implementation for DataFusion data sources
 
-use std::sync::{Arc, Mutex};
+use std::{
+    fmt::{self, Debug, Formatter},
+    sync::Arc,
+};
 
 use crate::error::Result;
 use crate::execution::physical_plan::{ExecutionPlan, Partition};
 use arrow::datatypes::SchemaRef;
-use arrow::record_batch::RecordBatchReader;
 
 /// Datasource execution plan
 pub struct DatasourceExec {
     schema: SchemaRef,
-    partitions: Vec<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>>,
+    partitions: Vec<Arc<dyn Partition>>,
+}
+
+impl Debug for DatasourceExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DataSourceExec")
+            .field("schema", &self.schema)
+            .field("partitions.len", &self.partitions.len())
+            .finish()
+    }
 }
 
 impl DatasourceExec {
     /// Create a new data source execution plan
-    pub fn new(
-        schema: SchemaRef,
-        partitions: Vec<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>>,
-    ) -> Self {
+    pub fn new(schema: SchemaRef, partitions: Vec<Arc<dyn Partition>>) -> Self {
         Self { schema, partitions }
     }
 }
@@ -46,29 +54,6 @@ impl ExecutionPlan for DatasourceExec {
     }
 
     fn partitions(&self) -> Result<Vec<Arc<dyn Partition>>> {
-        Ok(self
-            .partitions
-            .iter()
-            .map(|it| {
-                Arc::new(DatasourcePartition::new(it.clone())) as Arc<dyn Partition>
-            })
-            .collect::<Vec<_>>())
-    }
-}
-
-/// Wrapper to convert a `SendableRecordBatchReader` into a `Partition`.
-pub struct DatasourcePartition {
-    batch_iter: Arc<Mutex<dyn RecordBatchReader + Send + Sync>>,
-}
-
-impl DatasourcePartition {
-    fn new(batch_iter: Arc<Mutex<dyn RecordBatchReader + Send + Sync>>) -> Self {
-        Self { batch_iter }
-    }
-}
-
-impl Partition for DatasourcePartition {
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
-        Ok(self.batch_iter.clone())
+        Ok(self.partitions.clone())
     }
 }

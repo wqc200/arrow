@@ -39,7 +39,7 @@ use crate::execution::physical_plan::expressions::{
     Avg, BinaryExpr, CastExpr, Column, Count, Literal, Max, Min, PhysicalSortExpr, Sum,
 };
 use crate::execution::physical_plan::hash_aggregate::HashAggregateExec;
-use crate::execution::physical_plan::limit::LimitExec;
+use crate::execution::physical_plan::limit::GlobalLimitExec;
 use crate::execution::physical_plan::math_expressions::register_math_functions;
 use crate::execution::physical_plan::memory::MemoryExec;
 use crate::execution::physical_plan::merge::MergeExec;
@@ -48,7 +48,7 @@ use crate::execution::physical_plan::projection::ProjectionExec;
 use crate::execution::physical_plan::selection::SelectionExec;
 use crate::execution::physical_plan::sort::{SortExec, SortOptions};
 use crate::execution::physical_plan::udf::{ScalarFunction, ScalarFunctionExpr};
-use crate::execution::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr, VariableExpr};
+use crate::execution::physical_plan::{AggregateExpr, ExecutionPlan, PhysicalExpr};
 use crate::execution::table_impl::TableImpl;
 use crate::logicalplan::{
     Expr, FunctionMeta, FunctionType, LogicalPlan, LogicalPlanBuilder,
@@ -57,21 +57,15 @@ use crate::optimizer::optimizer::OptimizerRule;
 use crate::optimizer::projection_push_down::ProjectionPushDown;
 use crate::optimizer::type_coercion::TypeCoercionRule;
 use crate::sql::{
-    parser::{DFParser, FileType, Statement},
+    parser::{DFParser, FileType},
     planner::{SchemaProvider, SqlToRel},
 };
 use crate::table::Table;
-use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption, DataType as SQLDataType};
-use sqlparser::dialect::{GenericDialect};
-
-#[cfg(test)]
-use crate::test::variable_expr::{ScalarVariable, create_table_dual};
 
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {
     datasources: HashMap<String, Box<dyn TableProvider + Send + Sync>>,
     scalar_functions: HashMap<String, Box<ScalarFunction>>,
-    variable_expr: Option<Box<dyn VariableExpr + Send + Sync>>,
 }
 
 fn tuple_err<T, R>(value: (Result<T>, Result<R>)) -> Result<(T, R)> {
@@ -89,7 +83,6 @@ impl ExecutionContext {
         let mut ctx = Self {
             datasources: HashMap::new(),
             scalar_functions: HashMap::new(),
-            variable_expr: None,
         };
         register_math_functions(&mut ctx);
         ctx
@@ -148,8 +141,7 @@ impl ExecutionContext {
 
     /// Creates a logical plan
     pub fn create_logical_plan(&mut self, sql: &str) -> Result<LogicalPlan> {
-        let dialect = &GenericDialect{};
-        let statements = DFParser::parse_sql(sql, dialect)?;
+        let statements = DFParser::parse_sql(sql)?;
 
         if statements.len() != 1 {
             return Err(ExecutionError::NotImplemented(format!(
@@ -157,44 +149,14 @@ impl ExecutionContext {
             )));
         }
 
-        match &statements[0] {
-            Statement::Statement(s) => {
-                let schema_provider = ExecutionContextSchemaProvider {
-                    datasources: &self.datasources,
-                    scalar_functions: &self.scalar_functions,
-                };
+        let schema_provider = ExecutionContextSchemaProvider {
+            datasources: &self.datasources,
+            scalar_functions: &self.scalar_functions,
+        };
 
-                // create a query planner
-                let query_planner = SqlToRel::new(schema_provider);
-
-                // plan the query (create a logical relational plan)
-                let plan = query_planner.statement_to_plan(&s)?;
-
-                Ok(plan)
-            }
-            Statement::CreateExternalTable {
-                name,
-                columns,
-                file_type,
-                has_header,
-                location,
-            } => {
-                let schema = Box::new(self.build_schema(&columns)?);
-
-                Ok(LogicalPlan::CreateExternalTable {
-                    schema,
-                    name: name.clone(),
-                    location: location.clone(),
-                    file_type: file_type.clone(),
-                    has_header: has_header.clone(),
-                })
-            }
-        }
-    }
-
-    /// Register variable expr
-    pub fn register_variable_expr(&mut self, variable_expr: Box<dyn VariableExpr + Send + Sync>) {
-        self.variable_expr = Option::from(variable_expr);
+        // create a query planner
+        let query_planner = SqlToRel::new(schema_provider);
+        Ok(query_planner.statement_to_plan(&statements[0])?)
     }
 
     /// Register a scalar UDF
@@ -205,44 +167,6 @@ impl ExecutionContext {
     /// Get a reference to the registered scalar functions
     pub fn scalar_functions(&self) -> &HashMap<String, Box<ScalarFunction>> {
         &self.scalar_functions
-    }
-
-    /// Get schema from columns
-    pub fn build_schema(&self, columns: &Vec<SQLColumnDef>) -> Result<Schema> {
-        let mut fields = Vec::new();
-
-        for column in columns {
-            let data_type = self.make_data_type(&column.data_type)?;
-            let allow_null = column
-                .options
-                .iter()
-                .any(|x| x.option == ColumnOption::Null);
-            fields.push(Field::new(&column.name.value, data_type, allow_null));
-        }
-
-        Ok(Schema::new(fields))
-    }
-
-    fn make_data_type(&self, sql_type: &SQLDataType) -> Result<DataType> {
-        match sql_type {
-            SQLDataType::BigInt => Ok(DataType::Int64),
-            SQLDataType::Int => Ok(DataType::Int32),
-            SQLDataType::SmallInt => Ok(DataType::Int16),
-            SQLDataType::Char(_) | SQLDataType::Varchar(_) | SQLDataType::Text => {
-                Ok(DataType::Utf8)
-            }
-            SQLDataType::Decimal(_, _) => Ok(DataType::Float64),
-            SQLDataType::Float(_) => Ok(DataType::Float32),
-            SQLDataType::Real | SQLDataType::Double => Ok(DataType::Float64),
-            SQLDataType::Boolean => Ok(DataType::Boolean),
-            SQLDataType::Date => Ok(DataType::Date64(DateUnit::Day)),
-            SQLDataType::Time => Ok(DataType::Time64(TimeUnit::Millisecond)),
-            SQLDataType::Timestamp => Ok(DataType::Date64(DateUnit::Millisecond)),
-            _ => Err(ExecutionError::General(format!(
-                "Unsupported data type: {:?}.",
-                sql_type
-            ))),
-        }
     }
 
     /// Register a CSV file as a table so that it can be queried from SQL
@@ -333,10 +257,16 @@ impl ExecutionContext {
                             "Table provider returned no partitions".to_string(),
                         ))
                     } else {
-                        let partition = partitions[0].lock().unwrap();
-                        let schema = partition.schema();
-                        let exec =
-                            DatasourceExec::new(schema.clone(), partitions.clone());
+                        let schema = match projection {
+                            None => provider.schema().clone(),
+                            Some(p) => Arc::new(Schema::new(
+                                p.iter()
+                                    .map(|i| provider.schema().field(*i).clone())
+                                    .collect(),
+                            )),
+                        };
+
+                        let exec = DatasourceExec::new(schema, partitions.clone());
                         Ok(Arc::new(exec))
                     }
                 }
@@ -495,7 +425,7 @@ impl ExecutionContext {
                 let input = self.create_physical_plan(input, batch_size)?;
                 let input_schema = input.as_ref().schema().clone();
 
-                Ok(Arc::new(LimitExec::new(
+                Ok(Arc::new(GlobalLimitExec::new(
                     input_schema.clone(),
                     input.partitions()?,
                     *n,
@@ -520,15 +450,6 @@ impl ExecutionContext {
                 input_schema.field_with_name(&name)?;
                 Ok(Arc::new(Column::new(name)))
             }
-            Expr::ScalarVariable(variable_names) => match &self.variable_expr {
-                Some(variable_expr) => {
-                    let scalar_value = variable_expr.get_value(variable_names.clone())?;
-                    Ok(Arc::new(Literal::new(scalar_value)))
-                }
-                _ => Err(ExecutionError::General(format!(
-                    "No variable expr found"
-                ))),
-            },
             Expr::Literal(value) => Ok(Arc::new(Literal::new(value.clone()))),
             Expr::BinaryExpr { left, op, right } => Ok(Arc::new(BinaryExpr::new(
                 self.create_physical_expr(left, input_schema)?,
@@ -733,7 +654,7 @@ mod tests {
     use crate::execution::physical_plan::udf::ScalarUdf;
     use crate::logicalplan::{aggregate_expr, col, scalar_function};
     use crate::test;
-    use arrow::array::{ArrayRef, Int32Array, StringArray};
+    use arrow::array::{ArrayRef, Int32Array};
     use arrow::compute::add;
     use std::fs::File;
     use std::io::prelude::*;
@@ -778,42 +699,6 @@ mod tests {
 
         let row_count: usize = results.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(row_count, 20);
-
-        Ok(())
-    }
-
-    #[test]
-    fn create_variable_expr() -> Result<()> {
-        let tmp_dir = TempDir::new("variable_expr")?;
-        let partition_count = 4;
-        let mut ctx = create_ctx(&tmp_dir, partition_count)?;
-
-        let variable_expr = ScalarVariable::new();
-        ctx.register_variable_expr(Box::new(variable_expr));
-
-        let provider = create_table_dual();
-        ctx.register_table("dual", provider);
-
-        let results = collect(&mut ctx, "SELECT @@version, @name FROM dual")?;
-
-        let batch = &results[0];
-        assert_eq!(2, batch.num_columns());
-        assert_eq!(1, batch.num_rows());
-        assert_eq!(field_names(batch), vec!["@@version", "@name"]);
-
-        let a = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("failed to cast a");
-        assert_eq!(a.value(0), "test");
-
-        let b = batch
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("failed to cast a");
-        assert_eq!(b.value(0), "test");
 
         Ok(())
     }
@@ -1219,6 +1104,31 @@ mod tests {
     }
 
     #[test]
+    fn query_csv_with_custom_partition_extension() -> Result<()> {
+        let tmp_dir = TempDir::new("query_csv_with_custom_partition_extension")?;
+
+        // The main stipulation of this test: use a file extension that isn't .csv.
+        let file_extension = ".tst";
+
+        let mut ctx = ExecutionContext::new();
+        let schema = populate_csv_partitions(&tmp_dir, 2, file_extension)?;
+        ctx.register_csv(
+            "test",
+            tmp_dir.path().to_str().unwrap(),
+            CsvReadOptions::new()
+                .schema(&schema)
+                .file_extension(file_extension),
+        )?;
+        let results = collect(&mut ctx, "SELECT SUM(c1), SUM(c2), COUNT(*) FROM test")?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+        assert_eq!(test::format_batch(&results[0]), vec!["10,110,20"]);
+
+        Ok(())
+    }
+
+    #[test]
     fn scalar_udf() -> Result<()> {
         let schema = Schema::new(vec![
             Field::new("a", DataType::Int32, false),
@@ -1344,10 +1254,12 @@ mod tests {
         ctx.write_csv(physical_plan.as_ref(), out_dir)
     }
 
-    /// Generate a partitioned CSV file and register it with an execution context
-    fn create_ctx(tmp_dir: &TempDir, partition_count: usize) -> Result<ExecutionContext> {
-        let mut ctx = ExecutionContext::new();
-
+    /// Generate CSV partitions within the supplied directory
+    fn populate_csv_partitions(
+        tmp_dir: &TempDir,
+        partition_count: usize,
+        file_extension: &str,
+    ) -> Result<SchemaRef> {
         // define schema for data source (csv file)
         let schema = Arc::new(Schema::new(vec![
             Field::new("c1", DataType::UInt32, false),
@@ -1356,7 +1268,7 @@ mod tests {
 
         // generate a partitioned file
         for partition in 0..partition_count {
-            let filename = format!("partition-{}.csv", partition);
+            let filename = format!("partition-{}.{}", partition, file_extension);
             let file_path = tmp_dir.path().join(&filename);
             let mut file = File::create(file_path)?;
 
@@ -1366,6 +1278,15 @@ mod tests {
                 file.write_all(data.as_bytes())?;
             }
         }
+
+        Ok(schema)
+    }
+
+    /// Generate a partitioned CSV file and register it with an execution context
+    fn create_ctx(tmp_dir: &TempDir, partition_count: usize) -> Result<ExecutionContext> {
+        let mut ctx = ExecutionContext::new();
+
+        let schema = populate_csv_partitions(tmp_dir, partition_count, ".csv")?;
 
         // register csv file with the execution context
         ctx.register_csv(

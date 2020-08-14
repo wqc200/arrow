@@ -52,9 +52,9 @@ hex = "0.4"
 prettytable-rs = { version = "0.8.0", optional = true }
 
 [features]
+default = []
 simd = ["packed_simd"]
 prettyprint = ["prettytable-rs"]
-default = ["prettyprint"]
 
 [dev-dependencies]
 criterion = "0.3"
@@ -91,6 +91,10 @@ harness = false
 
 [[bench]]
 name = "take_kernels"
+harness = false
+
+[[bench]]
+name = "length_kernel"
 harness = false
 
 [[bench]]

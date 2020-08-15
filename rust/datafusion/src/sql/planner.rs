@@ -374,7 +374,8 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
             SQLExpr::Identifier(ref id) => {
                 if &id.value[0..1] == "@" {
-                    Ok(Expr::ScalarVariable(vec![id.value.clone()]))
+                    let variable_names = vec![id.value.clone()];
+                    Ok(Expr::ScalarVariable(variable_names))
                 } else {
                     match schema.field_with_name(&id.value) {
                         Ok(field) => Ok(Expr::Column(field.name().clone())),

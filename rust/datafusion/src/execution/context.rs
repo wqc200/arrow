@@ -161,6 +161,11 @@ impl ExecutionContext {
         Ok(query_planner.statement_to_plan(&statements[0])?)
     }
 
+    /// Register variable expr
+    pub fn register_variable_expr(&mut self, variable_expr: Box<dyn VariableExpr + Send + Sync>) {
+        self.variable_expr = Option::from(variable_expr);
+    }
+
     /// Register a scalar UDF
     pub fn register_udf(&mut self, f: ScalarFunction) {
         self.scalar_functions.insert(f.name.clone(), Box::new(f));

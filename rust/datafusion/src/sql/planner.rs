@@ -28,10 +28,7 @@ use crate::sql::parser::{CreateExternalTable, FileType, Statement as DFStatement
 
 use arrow::datatypes::*;
 
-use sqlparser::ast::{
-    BinaryOperator, DataType as SQLDataType, Expr as SQLExpr, Query, Select, SelectItem,
-    SetExpr, TableFactor, TableWithJoins, UnaryOperator, Value,
-};
+use sqlparser::ast::{BinaryOperator, DataType as SQLDataType, Expr as SQLExpr, Query, Select, SelectItem, SetExpr, TableFactor, TableWithJoins, UnaryOperator, Value, ObjectName};
 use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption};
 use sqlparser::ast::{OrderByExpr, Statement};
 
@@ -42,6 +39,8 @@ pub trait SchemaProvider {
     fn get_table_meta(&self, name: &str) -> Option<SchemaRef>;
     /// Getter for a UDF description
     fn get_function_meta(&self, name: &str) -> Option<Arc<FunctionMeta>>;
+    /// Getter for default schema name
+    fn get_schema_name(&self) -> String;
 }
 
 /// SQL query planner
@@ -180,11 +179,24 @@ impl<S: SchemaProvider> SqlToRel<S> {
         let relation = &from[0].relation;
         match relation {
             TableFactor::Table { name, .. } => {
-                let name = name.to_string();
-                match self.schema_provider.get_table_meta(&name) {
+                let mut schema_name = String::new();
+                let mut idents = vec![];
+                if name.0.len() > 1 {
+                    schema_name.push_str(name.0.get(0).unwrap().to_string().as_str());
+                    for n in 1..name.0.len() {
+                        idents.push(name.0.get(n).unwrap().clone());
+                    }
+                } else {
+                    schema_name.push_str(self.schema_provider.get_schema_name().as_str());
+                    idents.push(name.0.get(0).unwrap().clone());
+                }
+                let table_name = ObjectName(idents).to_string();
+                let compound_table_name = concat!(schema_name, '.', table_name).into();
+
+                match self.schema_provider.get_table_meta(compound_table_name) {
                     Some(schema) => Ok(LogicalPlanBuilder::scan(
-                        "default",
-                        &name,
+                        schema_name.as_str(),
+                        table_name.as_str(),
                         schema.as_ref(),
                         None,
                     )?
@@ -914,6 +926,10 @@ mod tests {
                 ))),
                 _ => None,
             }
+        }
+
+        fn get_schema_name(&self) -> String {
+            "default".to_string()
         }
     }
 }

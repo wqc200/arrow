@@ -26,13 +26,13 @@ use crate::execution::physical_plan::Partition;
 
 /// Source table
 pub trait TableProvider {
-    /// Get a reference to the schema for this table
-    fn schema(&self) -> SchemaRef;
-
     /// Perform a scan of a table and return a sequence of iterators over the data (one
     /// iterator per partition)
     fn scan(
         &self,
+        schema_name: &str,
+        table_name: &str,
+        table_schema: SchemaRef,
         projection: &Option<Vec<usize>>,
         batch_size: usize,
     ) -> Result<Vec<Arc<dyn Partition>>>;

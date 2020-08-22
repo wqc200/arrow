@@ -31,20 +31,18 @@ use crate::execution::physical_plan::{ExecutionPlan, Partition};
 
 /// In-memory table
 pub struct MemTable {
-    schema: SchemaRef,
     batches: Vec<Vec<RecordBatch>>,
 }
 
 impl MemTable {
     /// Create a new in-memory table from the provided schema and record batches
-    pub fn new(schema: SchemaRef, partitions: Vec<Vec<RecordBatch>>) -> Result<Self> {
+    pub fn new(partitions: Vec<Vec<RecordBatch>>) -> Result<Self> {
         if partitions.iter().all(|partition| {
             partition
                 .iter()
                 .all(|batches| batches.schema().as_ref() == schema.as_ref())
         }) {
             Ok(Self {
-                schema,
                 batches: partitions,
             })
         } else {
@@ -56,7 +54,6 @@ impl MemTable {
 
     /// Create a mem table by reading from another data source
     pub fn load(t: &dyn TableProvider) -> Result<Self> {
-        let schema = t.schema();
         let partitions = t.scan(&None, 1024 * 1024)?;
 
         let mut data: Vec<Vec<RecordBatch>> = Vec::with_capacity(partitions.len());
@@ -70,24 +67,23 @@ impl MemTable {
             data.push(partition_batches);
         }
 
-        MemTable::new(schema.clone(), data)
+        MemTable::new(data)
     }
 }
 
 impl TableProvider for MemTable {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
     fn scan(
         &self,
+        schema_name: &str,
+        table_name: &str,
+        table_schema: SchemaRef,
         projection: &Option<Vec<usize>>,
         _batch_size: usize,
     ) -> Result<Vec<Arc<dyn Partition>>> {
         let columns: Vec<usize> = match projection {
             Some(p) => p.clone(),
             None => {
-                let l = self.schema.fields().len();
+                let l = table_schema.fields().len();
                 let mut v = Vec::with_capacity(l);
                 for i in 0..l {
                     v.push(i);
@@ -99,8 +95,8 @@ impl TableProvider for MemTable {
         let projected_columns: Result<Vec<Field>> = columns
             .iter()
             .map(|i| {
-                if *i < self.schema.fields().len() {
-                    Ok(self.schema.field(*i).clone())
+                if *i < table_schema.fields().len() {
+                    Ok(table_schema.field(*i).clone())
                 } else {
                     Err(ExecutionError::General(
                         "Projection index out of range".to_string(),

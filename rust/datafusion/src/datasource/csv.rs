@@ -50,8 +50,7 @@ use crate::execution::physical_plan::{ExecutionPlan, Partition};
 
 /// Represents a CSV file with a provided schema
 pub struct CsvFile {
-    filename: String,
-    schema: SchemaRef,
+    filepath: String,
     has_header: bool,
     delimiter: u8,
     file_extension: String,
@@ -59,15 +58,9 @@ pub struct CsvFile {
 
 impl CsvFile {
     /// Attempt to initialize a new `CsvFile` from a file path
-    pub fn try_new(filename: &str, options: CsvReadOptions) -> Result<Self> {
-        let schema = Arc::new(match options.schema {
-            Some(s) => s.clone(),
-            None => CsvExec::try_infer_schema(filename, &options)?,
-        });
-
+    pub fn try_new(filepath: &str, options: CsvReadOptions) -> Result<Self> {
         Ok(Self {
-            filename: String::from(filename),
-            schema,
+            filepath: String::from(filepath),
             has_header: options.has_header,
             delimiter: options.delimiter,
             file_extension: String::from(options.file_extension),
@@ -76,19 +69,18 @@ impl CsvFile {
 }
 
 impl TableProvider for CsvFile {
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
     fn scan(
         &self,
+        schema_name: &str,
+        table_name: &str,
+        table_schema: SchemaRef,
         projection: &Option<Vec<usize>>,
         batch_size: usize,
     ) -> Result<Vec<Arc<dyn Partition>>> {
         let exec = CsvExec::try_new(
-            &self.filename,
+            &self.filepath,
             CsvReadOptions::new()
-                .schema(&self.schema)
+                .schema(table_schema.as_ref())
                 .has_header(self.has_header)
                 .delimiter(self.delimiter)
                 .file_extension(self.file_extension.as_str()),

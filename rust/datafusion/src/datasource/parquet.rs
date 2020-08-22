@@ -46,15 +46,13 @@ impl ParquetTable {
 }
 
 impl TableProvider for ParquetTable {
-    /// Get the schema for this parquet file.
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
     /// Scan the file(s), using the provided projection, and return one BatchIterator per
     /// partition.
     fn scan(
         &self,
+        schema_name: &str,
+        table_name: &str,
+        table_schema: SchemaRef,
         projection: &Option<Vec<usize>>,
         batch_size: usize,
     ) -> Result<Vec<Arc<dyn Partition>>> {

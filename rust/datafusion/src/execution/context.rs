@@ -64,8 +64,10 @@ use crate::table::Table;
 
 /// Execution context for registering data sources and executing queries
 pub struct ExecutionContext {
-    datasources: HashMap<String, Box<dyn TableProvider + Send + Sync>>,
+    table_schemas: HashMap<String, Box<Schema>>,
+    engine_providers: HashMap<String, Box<dyn TableProvider + Send + Sync>>,
     scalar_functions: HashMap<String, Box<ScalarFunction>>,
+    schema_name: String,
 }
 
 fn tuple_err<T, R>(value: (Result<T>, Result<R>)) -> Result<(T, R)> {
@@ -81,8 +83,10 @@ impl ExecutionContext {
     /// Create a new execution context for in-memory queries
     pub fn new() -> Self {
         let mut ctx = Self {
-            datasources: HashMap::new(),
+            table_schemas: HashMap::new(),
+            engine_providers: HashMap::new(),
             scalar_functions: HashMap::new(),
+            schema_name: "default".to_string(),
         };
         register_math_functions(&mut ctx);
         ctx
@@ -150,13 +154,30 @@ impl ExecutionContext {
         }
 
         let schema_provider = ExecutionContextSchemaProvider {
-            datasources: &self.datasources,
+            table_schemas: &self.table_schemas,
+            engine_providers: &self.engine_providers,
             scalar_functions: &self.scalar_functions,
+            schema_name: self.schema_name.to_string(),
         };
 
         // create a query planner
         let query_planner = SqlToRel::new(schema_provider);
         Ok(query_planner.statement_to_plan(&statements[0])?)
+    }
+
+    /// Register a schema name
+    pub fn register_schema_name(&mut self, schema_name: &str) {
+        self.schema_name = schema_name.to_string();
+    }
+
+    /// Register a table schema
+    pub fn register_table_schema(
+        &mut self,
+        table_name: &str,
+        table_schema: Schema,
+    ) {
+
+        self.table_schemas.insert(compound_table_name.to_string(), Box::new(table_schema));
     }
 
     /// Register a scalar UDF
@@ -193,19 +214,18 @@ impl ExecutionContext {
         name: &str,
         provider: Box<dyn TableProvider + Send + Sync>,
     ) {
-        self.datasources.insert(name.to_string(), provider);
+        self.table_provider.insert(name.to_string(), provider);
     }
 
     /// Get a table by name
     pub fn table(&mut self, table_name: &str) -> Result<Arc<dyn Table>> {
-        match self.datasources.get(table_name) {
-            Some(provider) => {
-                let schema = provider.schema().as_ref().clone();
+        match self.table_schemas.get(table_name) {
+            Some(table_schema) => {
                 let table_scan = LogicalPlan::TableScan {
-                    schema_name: "".to_string(),
+                    schema_name: self.schema_name.clone(),
                     table_name: table_name.to_string(),
-                    table_schema: Box::new(schema.to_owned()),
-                    projected_schema: Box::new(schema),
+                    table_schema: table_schema.clone(),
+                    projected_schema: table_schema.clone(),
                     projection: None,
                 };
                 Ok(Arc::new(TableImpl::new(
@@ -221,7 +241,7 @@ impl ExecutionContext {
 
     /// The set of available tables. Use `table` to get a specific table.
     pub fn tables(&self) -> HashSet<String> {
-        self.datasources.keys().cloned().collect()
+        self.table_provider.keys().cloned().collect()
     }
 
     /// Optimize the logical plan by applying optimizer rules
@@ -246,34 +266,46 @@ impl ExecutionContext {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match logical_plan {
             LogicalPlan::TableScan {
+                schema_name,
                 table_name,
+                table_schema,
                 projection,
                 ..
-            } => match self.datasources.get(table_name) {
-                Some(provider) => {
-                    let partitions = provider.scan(projection, batch_size)?;
-                    if partitions.is_empty() {
-                        Err(ExecutionError::General(
-                            "Table provider returned no partitions".to_string(),
-                        ))
-                    } else {
-                        let schema = match projection {
-                            None => provider.schema().clone(),
-                            Some(p) => Arc::new(Schema::new(
-                                p.iter()
-                                    .map(|i| provider.schema().field(*i).clone())
-                                    .collect(),
-                            )),
-                        };
+            } => {
+                match table_schema.metadata().get("engine") {
+                    Some(engine_name) => {
+                        match self.engine_providers.get(engine_name.as_ref()){
+                            Some(provider) => {
+                                let partitions = provider.scan(projection, batch_size)?;
+                                if partitions.is_empty() {
+                                    Err(ExecutionError::General(
+                                        "Table provider returned no partitions".to_string(),
+                                    ))
+                                } else {
+                                    let schema = match projection {
+                                        None => provider.schema().clone(),
+                                        Some(p) => Arc::new(Schema::new(
+                                            p.iter()
+                                                .map(|i| provider.schema().field(*i).clone())
+                                                .collect(),
+                                        )),
+                                    };
 
-                        let exec = DatasourceExec::new(schema, partitions.clone());
-                        Ok(Arc::new(exec))
+                                    let exec = DatasourceExec::new(schema, partitions.clone());
+                                    Ok(Arc::new(exec))
+                                }
+                            }
+                            _ => Err(ExecutionError::General(format!(
+                                "No table provider named {}",
+                                engine_name
+                            ))),
+                        }
                     }
+                    _ => Err(ExecutionError::General(format!(
+                        "No table engine find {}",
+                        compound_table_name
+                    ))),
                 }
-                _ => Err(ExecutionError::General(format!(
-                    "No table named {}",
-                    table_name
-                ))),
             },
             LogicalPlan::InMemoryScan {
                 data,
@@ -612,26 +644,34 @@ impl ExecutionContext {
 
 /// Get schema and scalar functions for execution context
 pub struct ExecutionContextSchemaProvider<'a> {
-    datasources: &'a HashMap<String, Box<dyn TableProvider + Send + Sync>>,
+    table_schemas: &'a HashMap<String, Box<Schema>>,
+    engine_providers: &'a HashMap<String, Box<dyn TableProvider + Send + Sync>>,
     scalar_functions: &'a HashMap<String, Box<ScalarFunction>>,
+    schema_name: String,
 }
 
 impl<'a> ExecutionContextSchemaProvider<'a> {
     /// Create a new ExecutionContextSchemaProvider based on data sources and scalar functions
     pub fn new(
-        datasources: &'a HashMap<String, Box<dyn TableProvider + Send + Sync>>,
+        table_schemas: &'a HashMap<String, Box<Schema>>,
+        engine_providers: &'a HashMap<String, Box<dyn TableProvider + Send + Sync>>,
         scalar_functions: &'a HashMap<String, Box<ScalarFunction>>,
+        schema_name: &str,
     ) -> Self {
         ExecutionContextSchemaProvider {
-            datasources,
+            table_schemas,
+            engine_providers,
             scalar_functions,
+            schema_name: schema_name.to_string(),
         }
     }
 }
 
 impl SchemaProvider for ExecutionContextSchemaProvider<'_> {
     fn get_table_meta(&self, name: &str) -> Option<SchemaRef> {
-        self.datasources.get(name).map(|ds| ds.schema().clone())
+        self.table_schemas.get(name).map(|ds| {
+            Arc::new(*ds.clone())
+        })
     }
 
     fn get_function_meta(&self, name: &str) -> Option<Arc<FunctionMeta>> {
@@ -643,6 +683,10 @@ impl SchemaProvider for ExecutionContextSchemaProvider<'_> {
                 FunctionType::Scalar,
             ))
         })
+    }
+
+    fn get_schema_name(&self) -> String {
+        self.schema_name.clone()
     }
 }
 
@@ -752,7 +796,7 @@ mod tests {
         let tmp_dir = TempDir::new("execute")?;
         let ctx = create_ctx(&tmp_dir, 1)?;
 
-        let schema = ctx.datasources.get("test").unwrap().schema();
+        let schema = ctx.table_provider.get("test").unwrap().schema();
         assert_eq!(schema.field_with_name("c1")?.is_nullable(), false);
 
         let plan = LogicalPlanBuilder::scan("default", "test", schema.as_ref(), None)?

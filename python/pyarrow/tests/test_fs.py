@@ -983,12 +983,20 @@ def test_mockfs_mtime_roundtrip(mockfs):
 
 
 @pytest.mark.s3
-def test_s3_options():
+def test_s3_options(monkeypatch):
     from pyarrow.fs import S3FileSystem
 
+    # Avoid wait for unavailable metadata server in ARN role example below
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+
     fs = S3FileSystem(access_key='access', secret_key='secret',
-                      region='us-east-1', scheme='https',
-                      endpoint_override='localhost:8999')
+                      session_token='token', region='us-east-1',
+                      scheme='https', endpoint_override='localhost:8999')
+    assert isinstance(fs, S3FileSystem)
+    assert pickle.loads(pickle.dumps(fs)) == fs
+
+    fs = S3FileSystem(role_arn='role', session_name='session',
+                      external_id='id', load_frequency=100)
     assert isinstance(fs, S3FileSystem)
     assert pickle.loads(pickle.dumps(fs)) == fs
 
@@ -996,6 +1004,14 @@ def test_s3_options():
         S3FileSystem(access_key='access')
     with pytest.raises(ValueError):
         S3FileSystem(secret_key='secret')
+    with pytest.raises(ValueError):
+        S3FileSystem(access_key='access', session_token='token')
+    with pytest.raises(ValueError):
+        S3FileSystem(secret_key='secret', session_token='token')
+    with pytest.raises(ValueError):
+        S3FileSystem(
+            access_key='access', secret_key='secret', role_arn='arn'
+        )
 
 
 @pytest.mark.hdfs

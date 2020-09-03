@@ -23,19 +23,19 @@ use std::sync::{Arc, Mutex};
 use std::{fmt, thread};
 
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::common;
-use crate::execution::physical_plan::{ExecutionPlan, Partition};
+use crate::execution::physical_plan::ExecutionPlan;
+use crate::execution::physical_plan::{common, Partitioning};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use parquet::file::reader::SerializedFileReader;
 
 use crossbeam::channel::{bounded, Receiver, RecvError, Sender};
-use fmt::{Debug, Formatter};
+use fmt::Debug;
 use parquet::arrow::{ArrowReader, ParquetFileArrowReader};
 
 /// Execution plan for scanning a Parquet file
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParquetExec {
     /// Path to directory containing partitioned Parquet files with the same schema
     filenames: Vec<String>,
@@ -51,6 +51,7 @@ impl ParquetExec {
     /// Create a new Parquet reader execution plan
     pub fn try_new(
         path: &str,
+        table_meta: SchemaRef,
         projection: Option<Vec<usize>>,
         batch_size: usize,
     ) -> Result<Self> {
@@ -59,20 +60,15 @@ impl ParquetExec {
         if filenames.is_empty() {
             Err(ExecutionError::General("No files found".to_string()))
         } else {
-            let file = File::open(&filenames[0])?;
-            let file_reader = Rc::new(SerializedFileReader::new(file)?);
-            let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-            let schema = arrow_reader.get_schema()?;
-
             let projection = match projection {
                 Some(p) => p,
-                None => (0..schema.fields().len()).collect(),
+                None => (0..table_meta.fields().len()).collect(),
             };
 
             let projected_schema = Schema::new(
                 projection
                     .iter()
-                    .map(|i| schema.field(*i).clone())
+                    .map(|i| table_meta.field(*i).clone())
                     .collect(),
             );
 
@@ -91,53 +87,57 @@ impl ExecutionPlan for ParquetExec {
         self.schema.clone()
     }
 
-    fn partitions(&self) -> Result<Vec<Arc<dyn Partition>>> {
-        let partitions = self
-            .filenames
-            .iter()
-            .map(|filename| {
-                Arc::new(ParquetPartition::new(
-                    &filename,
-                    self.projection.clone(),
-                    self.schema.clone(),
-                    self.batch_size,
-                )) as Arc<dyn Partition>
-            })
-            .collect();
-        Ok(partitions)
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        // this is a leaf node and has no children
+        vec![]
     }
-}
 
-struct ParquetPartition {
-    /// Filename for this partition
-    filename: String,
-    /// Projection for which columns to load
-    projection: Vec<usize>,
-    /// Batch size
-    batch_size: usize,
-    schema: SchemaRef,
-}
-
-impl Debug for ParquetPartition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ParquetPartition").finish()
+    /// Get the output partitioning of this plan
+    fn output_partitioning(&self) -> Partitioning {
+        Partitioning::UnknownPartitioning(self.filenames.len())
     }
-}
 
-impl ParquetPartition {
-    /// Create a new Parquet partition
-    pub fn new(
-        filename: &str,
-        projection: Vec<usize>,
-        schema: SchemaRef,
-        batch_size: usize,
-    ) -> Self {
-        Self {
-            filename: filename.to_owned(),
-            projection,
-            schema,
-            batch_size,
+    fn with_new_children(
+        &self,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(Arc::new(self.clone()))
+        } else {
+            Err(ExecutionError::General(format!(
+                "Children cannot be replaced in {:?}",
+                self
+            )))
         }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+    ) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
+        // because the parquet implementation is not thread-safe, it is necessary to execute
+        // on a thread and communicate with channels
+        let (response_tx, response_rx): (
+            Sender<ArrowResult<Option<RecordBatch>>>,
+            Receiver<ArrowResult<Option<RecordBatch>>>,
+        ) = bounded(2);
+
+        let filename = self.filenames[partition].clone();
+        let projection = self.projection.clone();
+        let batch_size = self.batch_size;
+
+        thread::spawn(move || {
+            if let Err(e) = read_file(&filename, projection, batch_size, response_tx) {
+                println!("Parquet reader thread terminated due to error: {:?}", e);
+            }
+        });
+
+        let iterator = Arc::new(Mutex::new(ParquetIterator {
+            schema: self.schema.clone(),
+            response_rx,
+        }));
+
+        Ok(iterator)
     }
 }
 
@@ -186,34 +186,6 @@ fn read_file(
     Ok(())
 }
 
-impl Partition for ParquetPartition {
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
-        // because the parquet implementation is not thread-safe, it is necessary to execute
-        // on a thread and communicate with channels
-        let (response_tx, response_rx): (
-            Sender<ArrowResult<Option<RecordBatch>>>,
-            Receiver<ArrowResult<Option<RecordBatch>>>,
-        ) = bounded(2);
-
-        let filename = self.filename.clone();
-        let projection = self.projection.clone();
-        let batch_size = self.batch_size;
-
-        thread::spawn(move || {
-            if let Err(e) = read_file(&filename, projection, batch_size, response_tx) {
-                println!("Parquet reader thread terminated due to error: {:?}", e);
-            }
-        });
-
-        let iterator = Arc::new(Mutex::new(ParquetIterator {
-            schema: self.schema.clone(),
-            response_rx,
-        }));
-
-        Ok(iterator)
-    }
-}
-
 struct ParquetIterator {
     schema: SchemaRef,
     response_rx: Receiver<ArrowResult<Option<RecordBatch>>>,
@@ -238,16 +210,18 @@ mod tests {
     use super::*;
     use std::env;
 
+    use crate::datasource::parquet::parquet_infer_schema;
+
     #[test]
     fn test() -> Result<()> {
         let testdata =
             env::var("PARQUET_TEST_DATA").expect("PARQUET_TEST_DATA not defined");
         let filename = format!("{}/alltypes_plain.parquet", testdata);
-        let parquet_exec = ParquetExec::try_new(&filename, Some(vec![0, 1, 2]), 1024)?;
-        let partitions = parquet_exec.partitions()?;
-        assert_eq!(partitions.len(), 1);
+        let schema_ref = parquet_infer_schema(&filename).unwrap();
+        let parquet_exec = ParquetExec::try_new(&filename, schema_ref, Some(vec![0, 1, 2]), 1024)?;
+        assert_eq!(parquet_exec.output_partitioning().partition_count(), 1);
 
-        let results = partitions[0].execute()?;
+        let results = parquet_exec.execute(0)?;
         let mut results = results.lock().unwrap();
         let batch = results.next_batch()?.unwrap();
 

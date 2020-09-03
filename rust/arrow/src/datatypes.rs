@@ -1379,6 +1379,8 @@ pub struct Schema {
     /// A map of key-value pairs containing additional meta data.
     #[serde(default)]
     pub(crate) metadata: HashMap<String, String>,
+    /// A engine of a table
+    pub(crate) engine: String,
 }
 
 impl Schema {
@@ -1387,6 +1389,7 @@ impl Schema {
         Self {
             fields: vec![],
             metadata: HashMap::new(),
+            engine: String::new(),
         }
     }
 
@@ -1427,7 +1430,7 @@ impl Schema {
         fields: Vec<Field>,
         metadata: HashMap<String, String>,
     ) -> Self {
-        Self { fields, metadata }
+        Self { fields, metadata, engine: String::new() }
     }
 
     /// Merge schema into self if it is compatible. Struct fields will be merged recursively.
@@ -1572,7 +1575,19 @@ impl Schema {
                     HashMap::default()
                 };
 
-                Ok(Self { fields, metadata })
+                let engine = if let Some(value) = schema.get("engine") {
+                    if let Value::String(v) = value {
+                        v.to_string()
+                    } else {
+                        Err(ArrowError::ParseError(
+                            "`engine` field must be a string".to_string(),
+                        ))
+                    }
+                } else {
+                    HashMap::default()
+                };
+
+                Ok(Self { fields, metadata, engine })
             }
             _ => Err(ArrowError::ParseError(
                 "Invalid json value type for schema".to_string(),

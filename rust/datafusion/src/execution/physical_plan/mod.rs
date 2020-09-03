@@ -23,23 +23,78 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
-use crate::logicalplan::ScalarValue;
+use crate::execution::context::ExecutionContextState;
+use crate::logicalplan::{LogicalPlan, ScalarValue};
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
-use arrow::record_batch::{RecordBatch, RecordBatchReader};
+use arrow::{
+    compute::kernels::length::length,
+    record_batch::{RecordBatch, RecordBatchReader},
+};
+use udf::ScalarFunction;
 
-/// Partition-aware execution plan for a relation
-pub trait ExecutionPlan: Debug {
-    /// Get the schema for this execution plan
-    fn schema(&self) -> SchemaRef;
-    /// Get the partitions for this execution plan. Each partition can be executed in parallel.
-    fn partitions(&self) -> Result<Vec<Arc<dyn Partition>>>;
+/// Physical query planner that converts a `LogicalPlan` to an
+/// `ExecutionPlan` suitable for execution.
+pub trait PhysicalPlanner {
+    /// Create a physical plan from a logical plan
+    fn create_physical_plan(
+        &self,
+        logical_plan: &LogicalPlan,
+        ctx_state: &ExecutionContextState,
+    ) -> Result<Arc<dyn ExecutionPlan>>;
 }
 
-/// Represents a partition of an execution plan that can be executed on a thread
-pub trait Partition: Send + Sync + Debug {
-    /// Execute this partition and return an iterator over RecordBatch
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>>;
+/// Partition-aware execution plan for a relation
+pub trait ExecutionPlan: Debug + Send + Sync {
+    /// Get the schema for this execution plan
+    fn schema(&self) -> SchemaRef;
+    /// Specifies the output partitioning scheme of this plan
+    fn output_partitioning(&self) -> Partitioning;
+    /// Specifies the data distribution requirements of all the children for this operator
+    fn required_child_distribution(&self) -> Distribution {
+        Distribution::UnspecifiedDistribution
+    }
+    /// Get a list of child execution plans that provide the input for this plan. The returned list
+    /// will be empty for leaf nodes, will contain a single value for unary nodes, or two
+    /// values for binary nodes (such as joins).
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>>;
+    /// Returns a new plan where all children were replaced by new plans.
+    /// The size of `children` must be equal to the size of `ExecutionPlan::children()`.
+    fn with_new_children(
+        &self,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>>;
+    /// Execute one partition and return an iterator over RecordBatch
+    fn execute(
+        &self,
+        partition: usize,
+    ) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>>;
+}
+
+/// Partitioning schemes supported by operators.
+#[derive(Debug, Clone)]
+pub enum Partitioning {
+    /// Unknown partitioning scheme
+    UnknownPartitioning(usize),
+}
+
+impl Partitioning {
+    /// Returns the number of partitions in this partitioning scheme
+    pub fn partition_count(&self) -> usize {
+        use Partitioning::*;
+        match self {
+            UnknownPartitioning(n) => *n,
+        }
+    }
+}
+
+/// Distribution schemes
+#[derive(Debug, Clone)]
+pub enum Distribution {
+    /// Unspecified distribution
+    UnspecifiedDistribution,
+    /// A single partition is required
+    SinglePartition,
 }
 
 pub trait VariableExpr: Send + Sync {
@@ -51,7 +106,7 @@ pub trait VariableExpr: Send + Sync {
 pub trait PhysicalExpr: Send + Sync + Display + Debug {
     /// Get the data type of this expression, given the schema of the input
     fn data_type(&self, input_schema: &Schema) -> Result<DataType>;
-    /// Decide whehter this expression is nullable, given the schema of the input
+    /// Determine whether this expression is nullable, given the schema of the input
     fn nullable(&self, input_schema: &Schema) -> Result<bool>;
     /// Evaluate an expression against a RecordBatch
     fn evaluate(&self, batch: &RecordBatch) -> Result<ArrayRef>;
@@ -61,6 +116,8 @@ pub trait PhysicalExpr: Send + Sync + Display + Debug {
 pub trait AggregateExpr: Send + Sync + Debug {
     /// Get the data type of this expression, given the schema of the input
     fn data_type(&self, input_schema: &Schema) -> Result<DataType>;
+    /// Determine whether this expression is nullable, given the schema of the input
+    fn nullable(&self, input_schema: &Schema) -> Result<bool>;
     /// Evaluate the expression being aggregated
     fn evaluate_input(&self, batch: &RecordBatch) -> Result<ArrayRef>;
     /// Create an accumulator for this aggregate expression
@@ -81,17 +138,30 @@ pub trait Accumulator: Debug {
     fn get_value(&self) -> Result<Option<ScalarValue>>;
 }
 
+/// Vector of scalar functions declared in this module
+pub fn scalar_functions() -> Vec<ScalarFunction> {
+    let mut udfs = vec![ScalarFunction::new(
+        "length",
+        vec![DataType::Utf8],
+        DataType::UInt32,
+        Arc::new(|args: &[ArrayRef]| Ok(Arc::new(length(args[0].as_ref())?))),
+    )];
+    udfs.append(&mut math_expressions::scalar_functions());
+    udfs
+}
+
 pub mod common;
 pub mod csv;
-pub mod datasource;
+pub mod explain;
 pub mod expressions;
+pub mod filter;
 pub mod hash_aggregate;
 pub mod limit;
 pub mod math_expressions;
 pub mod memory;
 pub mod merge;
 pub mod parquet;
+pub mod planner;
 pub mod projection;
-pub mod selection;
 pub mod sort;
 pub mod udf;

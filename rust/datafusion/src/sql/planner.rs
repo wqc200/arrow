@@ -19,16 +19,23 @@
 
 use std::sync::Arc;
 
+use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
+use crate::execution::context::ExecutionConfig;
 use crate::logicalplan::Expr::Alias;
-use crate::logicalplan::{
-    lit, Expr, FunctionMeta, LogicalPlan, LogicalPlanBuilder, Operator, ScalarValue,
+use crate::logicalplan::{lit, Expr, LogicalPlan, LogicalPlanBuilder, Operator, PlanType, ScalarValue, StringifiedPlan, length};
+use crate::{
+    execution::physical_plan::udf::ScalarFunction,
+    sql::parser::{CreateExternalTable, FileType, Statement as DFStatement},
 };
-use crate::sql::parser::{CreateExternalTable, FileType, Statement as DFStatement};
 
 use arrow::datatypes::*;
 
-use sqlparser::ast::{BinaryOperator, DataType as SQLDataType, Expr as SQLExpr, Query, Select, SelectItem, SetExpr, TableFactor, TableWithJoins, UnaryOperator, Value, ObjectName};
+use super::parser::ExplainPlan;
+use sqlparser::ast::{
+    BinaryOperator, DataType as SQLDataType, Expr as SQLExpr, Ident, Query, Select, SelectItem,
+    SetExpr, TableFactor, TableWithJoins, UnaryOperator, Value,
+};
 use sqlparser::ast::{ColumnDef as SQLColumnDef, ColumnOption};
 use sqlparser::ast::{OrderByExpr, Statement};
 
@@ -36,21 +43,25 @@ use sqlparser::ast::{OrderByExpr, Statement};
 /// functions referenced in SQL statements
 pub trait SchemaProvider {
     /// Getter for a field description
-    fn get_table_meta(&self, name: &str) -> Option<SchemaRef>;
+    fn get_table_meta(&self, name: &str) -> Option<&SchemaRef>;
+    /// Getter for a table provider
+    fn get_table_provider(&self, name: &str) -> Option<&Box<dyn TableProvider + Send + Sync>>;
+    /// Getter for a table provider
+    fn get_engine_name(&self, schema: &Box<Schema>) -> Option<&String>;
+    /// Getter for execution config
+    fn get_config(&self) -> ExecutionConfig;
     /// Getter for a UDF description
-    fn get_function_meta(&self, name: &str) -> Option<Arc<FunctionMeta>>;
-    /// Getter for default schema name
-    fn get_schema_name(&self) -> String;
+    fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarFunction>>;
 }
 
 /// SQL query planner
-pub struct SqlToRel<S: SchemaProvider> {
-    schema_provider: S,
+pub struct SqlToRel<'a, S: SchemaProvider> {
+    schema_provider: &'a S,
 }
 
-impl<S: SchemaProvider> SqlToRel<S> {
+impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     /// Create a new query planner
-    pub fn new(schema_provider: S) -> Self {
+    pub fn new(schema_provider: &'a S) -> Self {
         SqlToRel { schema_provider }
     }
 
@@ -59,6 +70,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
         match statement {
             DFStatement::CreateExternalTable(s) => self.external_table_to_plan(&s),
             DFStatement::Statement(s) => self.sql_statement_to_plan(&s),
+            DFStatement::Explain(s) => self.explain_statement_to_plan(&(*s)),
         }
     }
 
@@ -130,6 +142,31 @@ impl<S: SchemaProvider> SqlToRel<S> {
         })
     }
 
+    /// Generate a plan for EXPLAIN ... that will print out a plan
+    ///
+    pub fn explain_statement_to_plan(
+        &self,
+        explain_plan: &ExplainPlan,
+    ) -> Result<LogicalPlan> {
+        let verbose = explain_plan.verbose;
+        let plan = self.statement_to_plan(&explain_plan.statement)?;
+
+        let stringified_plans = vec![StringifiedPlan::new(
+            PlanType::LogicalPlan,
+            format!("{:#?}", plan),
+        )];
+
+        let schema = LogicalPlan::explain_schema();
+        let plan = Box::new(plan);
+
+        Ok(LogicalPlan::Explain {
+            verbose,
+            plan,
+            stringified_plans,
+            schema,
+        })
+    }
+
     fn build_schema(&self, columns: &Vec<SQLColumnDef>) -> Result<Schema> {
         let mut fields = Vec::new();
 
@@ -178,22 +215,20 @@ impl<S: SchemaProvider> SqlToRel<S> {
         };
         let relation = &from[0].relation;
         match relation {
-            TableFactor::Table { name, .. } => {
+            TableFactor::Table { mut name, .. } => {
                 let mut schema_name = String::new();
-                let mut idents = vec![];
+                let mut table_name = String::new();
                 if name.0.len() > 1 {
-                    schema_name.push_str(name.0.get(0).unwrap().to_string().as_str());
-                    for n in 1..name.0.len() {
-                        idents.push(name.0.get(n).unwrap().clone());
-                    }
+                    schema_name = name.0.remove(0).to_string();
+                    table_name = name.to_string();
                 } else {
-                    schema_name.push_str(self.schema_provider.get_schema_name().as_str());
-                    idents.push(name.0.get(0).unwrap().clone());
+                    schema_name = self.schema_provider.get_config().schema_name;
+                    table_name = name.to_string();
                 }
-                let table_name = ObjectName(idents).to_string();
-                let compound_table_name = concat!(schema_name, '.', table_name).into();
 
-                match self.schema_provider.get_table_meta(compound_table_name) {
+                let compound_name = [schema_name, table_name].join(".");
+
+                match self.schema_provider.get_table_meta(&compound_name) {
                     Some(schema) => Ok(LogicalPlanBuilder::scan(
                         schema_name.as_str(),
                         table_name.as_str(),
@@ -223,7 +258,7 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
         let plan = self.from_join_to_plan(&select.from)?;
 
-        // selection first
+        // filter (also known as selection) first
         let plan = self.filter(&plan, &select.selection)?;
 
         let projection_expr: Vec<Expr> = select
@@ -251,11 +286,11 @@ impl<S: SchemaProvider> SqlToRel<S> {
     fn filter(
         &self,
         plan: &LogicalPlan,
-        selection: &Option<SQLExpr>,
+        predicate: &Option<SQLExpr>,
     ) -> Result<LogicalPlan> {
-        match *selection {
-            Some(ref filter_expr) => LogicalPlanBuilder::from(&plan)
-                .filter(self.sql_to_rex(filter_expr, &plan.schema())?)?
+        match *predicate {
+            Some(ref predicate_expr) => LogicalPlanBuilder::from(&plan)
+                .filter(self.sql_to_rex(predicate_expr, &plan.schema())?)?
                 .build(),
             _ => Ok(plan.clone()),
         }
@@ -386,8 +421,8 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
             SQLExpr::Identifier(ref id) => {
                 if &id.value[0..1] == "@" {
-                    let variable_names = vec![id.value.clone()];
-                    Ok(Expr::ScalarVariable(variable_names))
+                    let var_names = vec![id.value.clone()];
+                    Ok(Expr::ScalarVariable(var_names))
                 } else {
                     match schema.field_with_name(&id.value) {
                         Ok(field) => Ok(Expr::Column(field.name().clone())),
@@ -398,20 +433,20 @@ impl<S: SchemaProvider> SqlToRel<S> {
                         ))),
                     }
                 }
-            },
+            }
 
             SQLExpr::CompoundIdentifier(ids) => {
-                let mut variable_names = vec![];
+                let mut var_names = vec![];
                 for i in 0..ids.len() {
                     let id = ids[i].clone();
-                    variable_names.push(id.value);
+                    var_names.push(id.value);
                 }
-                if &variable_names[0][0..1] == "@" {
-                    Ok(Expr::ScalarVariable(variable_names))
+                if &var_names[0][0..1] == "@" {
+                    Ok(Expr::ScalarVariable(var_names))
                 } else {
                     Err(ExecutionError::ExecutionError(format!(
                         "Invalid compound identifier '{:?}' for schema {}",
-                        variable_names,
+                        var_names,
                         schema.to_string()
                     )))
                 }
@@ -494,14 +529,9 @@ impl<S: SchemaProvider> SqlToRel<S> {
                             .map(|a| self.sql_to_rex(a, schema))
                             .collect::<Result<Vec<Expr>>>()?;
 
-                        // return type is same as the argument type for these aggregate
-                        // functions
-                        let return_type = rex_args[0].get_type(schema)?.clone();
-
                         Ok(Expr::AggregateFunction {
                             name: name.clone(),
                             args: rex_args,
-                            return_type,
                         })
                     }
                     "count" => {
@@ -518,7 +548,6 @@ impl<S: SchemaProvider> SqlToRel<S> {
                         Ok(Expr::AggregateFunction {
                             name: name.clone(),
                             args: rex_args,
-                            return_type: DataType::UInt64,
                         })
                     }
                     _ => match self.schema_provider.get_function_meta(&name) {
@@ -531,16 +560,14 @@ impl<S: SchemaProvider> SqlToRel<S> {
 
                             let mut safe_args: Vec<Expr> = vec![];
                             for i in 0..rex_args.len() {
-                                safe_args.push(
-                                    rex_args[i]
-                                        .cast_to(fm.args()[i].data_type(), schema)?,
-                                );
+                                safe_args
+                                    .push(rex_args[i].cast_to(&fm.arg_types[i], schema)?);
                             }
 
                             Ok(Expr::ScalarFunction {
                                 name: name.clone(),
                                 args: safe_args,
-                                return_type: fm.return_type().clone(),
+                                return_type: fm.return_type.clone(),
                             })
                         }
                         _ => Err(ExecutionError::General(format!(
@@ -590,7 +617,6 @@ pub fn convert_data_type(sql: &SQLDataType) -> Result<DataType> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logicalplan::FunctionType;
     use crate::sql::parser::DFParser;
 
     #[test]
@@ -612,41 +638,41 @@ mod tests {
     }
 
     #[test]
-    fn select_simple_selection() {
+    fn select_simple_filter() {
         let sql = "SELECT id, first_name, last_name \
                    FROM person WHERE state = 'CO'";
         let expected = "Projection: #id, #first_name, #last_name\
-                        \n  Selection: #state Eq Utf8(\"CO\")\
+                        \n  Filter: #state Eq Utf8(\"CO\")\
                         \n    TableScan: person projection=None";
         quick_test(sql, expected);
     }
 
     #[test]
-    fn select_neg_selection() {
+    fn select_neg_filter() {
         let sql = "SELECT id, first_name, last_name \
                    FROM person WHERE NOT state";
         let expected = "Projection: #id, #first_name, #last_name\
-                        \n  Selection: NOT #state\
+                        \n  Filter: NOT #state\
                         \n    TableScan: person projection=None";
         quick_test(sql, expected);
     }
 
     #[test]
-    fn select_compound_selection() {
+    fn select_compound_filter() {
         let sql = "SELECT id, first_name, last_name \
                    FROM person WHERE state = 'CO' AND age >= 21 AND age <= 65";
         let expected = "Projection: #id, #first_name, #last_name\
-            \n  Selection: #state Eq Utf8(\"CO\") And #age GtEq Int64(21) And #age LtEq Int64(65)\
+            \n  Filter: #state Eq Utf8(\"CO\") And #age GtEq Int64(21) And #age LtEq Int64(65)\
             \n    TableScan: person projection=None";
         quick_test(sql, expected);
     }
 
     #[test]
-    fn test_timestamp_selection() {
+    fn test_timestamp_filter() {
         let sql = "SELECT state FROM person WHERE birth_date < CAST (158412331400600000 as timestamp)";
 
         let expected = "Projection: #state\
-            \n  Selection: #birth_date Lt CAST(Int64(158412331400600000) AS Timestamp(Nanosecond, None))\
+            \n  Filter: #birth_date Lt CAST(Int64(158412331400600000) AS Timestamp(Nanosecond, None))\
             \n    TableScan: person projection=None";
 
         quick_test(sql, expected);
@@ -663,7 +689,7 @@ mod tests {
                    AND age < 65 \
                    AND age <= 65";
         let expected = "Projection: #age, #first_name, #last_name\
-                        \n  Selection: #age Eq Int64(21) \
+                        \n  Filter: #age Eq Int64(21) \
                         And #age NotEq Int64(21) \
                         And #age Gt Int64(21) \
                         And #age GtEq Int64(21) \
@@ -868,7 +894,7 @@ mod tests {
     }
 
     fn logical_plan(sql: &str) -> Result<LogicalPlan> {
-        let planner = SqlToRel::new(MockSchemaProvider {});
+        let planner = SqlToRel::new(&MockSchemaProvider {});
         let ast = DFParser::parse_sql(&sql).unwrap();
         planner.statement_to_plan(&ast[0])
     }
@@ -916,20 +942,16 @@ mod tests {
             }
         }
 
-        fn get_function_meta(&self, name: &str) -> Option<Arc<FunctionMeta>> {
+        fn get_function_meta(&self, name: &str) -> Option<Arc<ScalarFunction>> {
             match name {
-                "sqrt" => Some(Arc::new(FunctionMeta::new(
-                    "sqrt".to_string(),
-                    vec![Field::new("n", DataType::Float64, false)],
+                "sqrt" => Some(Arc::new(ScalarFunction::new(
+                    "sqrt",
+                    vec![DataType::Float64],
                     DataType::Float64,
-                    FunctionType::Scalar,
+                    Arc::new(|_| Err(ExecutionError::NotImplemented("".to_string()))),
                 ))),
                 _ => None,
             }
-        }
-
-        fn get_schema_name(&self) -> String {
-            "default".to_string()
         }
     }
 }

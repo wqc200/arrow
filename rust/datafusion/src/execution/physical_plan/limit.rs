@@ -20,11 +20,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::common::{self, RecordBatchIterator};
 use crate::execution::physical_plan::memory::MemoryIterator;
-use crate::execution::physical_plan::merge::MergeExec;
-use crate::execution::physical_plan::ExecutionPlan;
-use crate::execution::physical_plan::Partition;
+use crate::execution::physical_plan::{Distribution, ExecutionPlan, Partitioning};
 use arrow::array::ArrayRef;
 use arrow::compute::limit;
 use arrow::datatypes::SchemaRef;
@@ -33,126 +30,137 @@ use arrow::record_batch::{RecordBatch, RecordBatchReader};
 /// Limit execution plan
 #[derive(Debug)]
 pub struct GlobalLimitExec {
-    /// Input schema
-    schema: SchemaRef,
-    /// Input partitions
-    partitions: Vec<Arc<dyn Partition>>,
+    /// Input execution plan
+    input: Arc<dyn ExecutionPlan>,
     /// Maximum number of rows to return
     limit: usize,
+    /// Number of threads to run parallel LocalLimitExec on
+    concurrency: usize,
 }
 
 impl GlobalLimitExec {
     /// Create a new MergeExec
-    pub fn new(
-        schema: SchemaRef,
-        partitions: Vec<Arc<dyn Partition>>,
-        limit: usize,
-    ) -> Self {
+    pub fn new(input: Arc<dyn ExecutionPlan>, limit: usize, concurrency: usize) -> Self {
         GlobalLimitExec {
-            schema,
-            partitions,
+            input,
             limit,
+            concurrency,
         }
     }
 }
 
 impl ExecutionPlan for GlobalLimitExec {
     fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.input.schema()
     }
 
-    fn partitions(&self) -> Result<Vec<Arc<dyn Partition>>> {
-        Ok(vec![Arc::new(LimitPartition {
-            schema: self.schema.clone(),
-            partitions: self.partitions.clone(),
-            limit: self.limit,
-        })])
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![self.input.clone()]
     }
-}
 
-#[derive(Debug)]
-struct LimitPartition {
-    /// Input schema
-    schema: SchemaRef,
-    /// Input partitions
-    partitions: Vec<Arc<dyn Partition>>,
-    /// Maximum number of rows to return
-    limit: usize,
-}
+    fn required_child_distribution(&self) -> Distribution {
+        Distribution::SinglePartition
+    }
 
-impl Partition for LimitPartition {
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
-        // apply limit in parallel across all input partitions
-        let local_limit = self
-            .partitions
-            .iter()
-            .map(|p| {
-                Arc::new(LocalLimitExec::new(
-                    p.clone(),
-                    self.schema.clone(),
-                    self.limit,
-                )) as Arc<dyn Partition>
-            })
-            .collect();
+    /// Get the output partitioning of this plan
+    fn output_partitioning(&self) -> Partitioning {
+        Partitioning::UnknownPartitioning(1)
+    }
 
-        // limit needs to collapse inputs down to a single partition
-        let merge = MergeExec::new(self.schema.clone(), local_limit);
-        let merge_partitions = merge.partitions()?;
-        // MergeExec must always produce a single partition
-        assert_eq!(1, merge_partitions.len());
-        let it = merge_partitions[0].execute()?;
-        let batches = common::collect(it)?;
+    fn with_new_children(
+        &self,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match children.len() {
+            1 => Ok(Arc::new(GlobalLimitExec::new(
+                children[0].clone(),
+                self.limit,
+                self.concurrency,
+            ))),
+            _ => Err(ExecutionError::General(
+                "GlobalLimitExec wrong number of children".to_string(),
+            )),
+        }
+    }
 
-        // apply the limit to the output
-        let mut combined_results: Vec<Arc<RecordBatch>> = vec![];
-        let mut count = 0;
-        for batch in batches {
-            let capacity = self.limit - count;
-            if batch.num_rows() <= capacity {
-                count += batch.num_rows();
-                combined_results.push(Arc::new(batch.clone()))
-            } else {
-                let batch = truncate_batch(&batch, capacity)?;
-                count += batch.num_rows();
-                combined_results.push(Arc::new(batch.clone()))
-            }
-            if count == self.limit {
-                break;
-            }
+    fn execute(
+        &self,
+        partition: usize,
+    ) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
+        // GlobalLimitExec has a single output partition
+        if 0 != partition {
+            return Err(ExecutionError::General(format!(
+                "GlobalLimitExec invalid partition {}",
+                partition
+            )));
         }
 
-        Ok(Arc::new(Mutex::new(RecordBatchIterator::new(
-            self.schema.clone(),
-            combined_results,
-        ))))
+        // GlobalLimitExec requires a single input partition
+        if 1 != self.input.output_partitioning().partition_count() {
+            return Err(ExecutionError::General(
+                "GlobalLimitExec requires a single input partition".to_owned(),
+            ));
+        }
+
+        let it = self.input.execute(0)?;
+        Ok(Arc::new(Mutex::new(MemoryIterator::try_new(
+            collect_with_limit(it, self.limit)?,
+            self.input.schema(),
+            None,
+        )?)))
     }
 }
 
-/// LocalLimitExec applies a limit so a single partition
+/// LocalLimitExec applies a limit to a single partition
 #[derive(Debug)]
 pub struct LocalLimitExec {
-    input: Arc<dyn Partition>,
-    schema: SchemaRef,
+    input: Arc<dyn ExecutionPlan>,
     limit: usize,
 }
 
 impl LocalLimitExec {
     /// Create a new LocalLimitExec partition
-    pub fn new(input: Arc<dyn Partition>, schema: SchemaRef, limit: usize) -> Self {
-        Self {
-            input,
-            schema,
-            limit,
-        }
+    pub fn new(input: Arc<dyn ExecutionPlan>, limit: usize) -> Self {
+        Self { input, limit }
     }
 }
 
-impl Partition for LocalLimitExec {
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
-        let it = self.input.execute()?;
+impl ExecutionPlan for LocalLimitExec {
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![self.input.clone()]
+    }
+
+    fn output_partitioning(&self) -> Partitioning {
+        self.input.output_partitioning()
+    }
+
+    fn with_new_children(
+        &self,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match children.len() {
+            1 => Ok(Arc::new(LocalLimitExec::new(
+                children[0].clone(),
+                self.limit,
+            ))),
+            _ => Err(ExecutionError::General(
+                "LocalLimitExec wrong number of children".to_string(),
+            )),
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+    ) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
+        let it = self.input.execute(partition)?;
         Ok(Arc::new(Mutex::new(MemoryIterator::try_new(
             collect_with_limit(it, self.limit)?,
-            self.schema.clone(),
+            self.input.schema(),
             None,
         )?)))
     }
@@ -209,6 +217,7 @@ mod tests {
     use super::*;
     use crate::execution::physical_plan::common;
     use crate::execution::physical_plan::csv::{CsvExec, CsvReadOptions};
+    use crate::execution::physical_plan::merge::MergeExec;
     use crate::test;
 
     #[test]
@@ -223,14 +232,13 @@ mod tests {
             CsvExec::try_new(&path, CsvReadOptions::new().schema(&schema), None, 1024)?;
 
         // input should have 4 partitions
-        let input = csv.partitions()?;
-        assert_eq!(input.len(), num_partitions);
+        assert_eq!(csv.output_partitioning().partition_count(), num_partitions);
 
-        let limit = GlobalLimitExec::new(schema.clone(), input, 7);
-        let partitions = limit.partitions()?;
+        let limit =
+            GlobalLimitExec::new(Arc::new(MergeExec::new(Arc::new(csv), 2)), 7, 2);
 
         // the result should contain 4 batches (one per input partition)
-        let iter = partitions[0].execute()?;
+        let iter = limit.execute(0)?;
         let batches = common::collect(iter)?;
 
         // there should be a total of 100 rows

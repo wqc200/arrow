@@ -15,33 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Implementation of Table API
+//! Implementation of DataFrame API
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use crate::arrow::datatypes::DataType;
 use crate::arrow::record_batch::RecordBatch;
-use crate::error::{ExecutionError, Result};
-use crate::execution::context::ExecutionContext;
+use crate::dataframe::*;
+use crate::error::Result;
+use crate::execution::context::{ExecutionContext, ExecutionContextState};
 use crate::logicalplan::{col, Expr, LogicalPlan, LogicalPlanBuilder};
-use crate::table::*;
 use arrow::datatypes::Schema;
 
-/// Implementation of Table API
-pub struct TableImpl {
+/// Implementation of DataFrame API
+pub struct DataFrameImpl {
+    ctx_state: Arc<Mutex<ExecutionContextState>>,
     plan: LogicalPlan,
 }
 
-impl TableImpl {
+impl DataFrameImpl {
     /// Create a new Table based on an existing logical plan
-    pub fn new(plan: &LogicalPlan) -> Self {
-        Self { plan: plan.clone() }
+    pub fn new(ctx_state: Arc<Mutex<ExecutionContextState>>, plan: &LogicalPlan) -> Self {
+        Self {
+            ctx_state,
+            plan: plan.clone(),
+        }
     }
 }
 
-impl Table for TableImpl {
+impl DataFrame for DataFrameImpl {
     /// Apply a projection based on a list of column names
-    fn select_columns(&self, columns: Vec<&str>) -> Result<Arc<dyn Table>> {
+    fn select_columns(&self, columns: Vec<&str>) -> Result<Arc<dyn DataFrame>> {
         let exprs = columns
             .iter()
             .map(|name| {
@@ -57,17 +60,19 @@ impl Table for TableImpl {
     }
 
     /// Create a projection based on arbitrary expressions
-    fn select(&self, expr_list: Vec<Expr>) -> Result<Arc<dyn Table>> {
+    fn select(&self, expr_list: Vec<Expr>) -> Result<Arc<dyn DataFrame>> {
         let plan = LogicalPlanBuilder::from(&self.plan)
             .project(expr_list)?
             .build()?;
-        Ok(Arc::new(TableImpl::new(&plan)))
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 
-    /// Create a selection based on a filter expression
-    fn filter(&self, expr: Expr) -> Result<Arc<dyn Table>> {
-        let plan = LogicalPlanBuilder::from(&self.plan).filter(expr)?.build()?;
-        Ok(Arc::new(TableImpl::new(&plan)))
+    /// Create a filter based on a predicate expression
+    fn filter(&self, predicate: Expr) -> Result<Arc<dyn DataFrame>> {
+        let plan = LogicalPlanBuilder::from(&self.plan)
+            .filter(predicate)?
+            .build()?;
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 
     /// Perform an aggregate query
@@ -75,48 +80,23 @@ impl Table for TableImpl {
         &self,
         group_expr: Vec<Expr>,
         aggr_expr: Vec<Expr>,
-    ) -> Result<Arc<dyn Table>> {
+    ) -> Result<Arc<dyn DataFrame>> {
         let plan = LogicalPlanBuilder::from(&self.plan)
             .aggregate(group_expr, aggr_expr)?
             .build()?;
-        Ok(Arc::new(TableImpl::new(&plan)))
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 
     /// Limit the number of rows
-    fn limit(&self, n: usize) -> Result<Arc<dyn Table>> {
+    fn limit(&self, n: usize) -> Result<Arc<dyn DataFrame>> {
         let plan = LogicalPlanBuilder::from(&self.plan).limit(n)?.build()?;
-        Ok(Arc::new(TableImpl::new(&plan)))
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 
-    /// Return an expression representing a column within this table
-    fn col(&self, name: &str) -> Result<Expr> {
-        self.plan.schema().index_of(name)?; // check that the column exists
-        Ok(col(name))
-    }
-
-    /// Create an expression to represent the min() aggregate function
-    fn min(&self, expr: &Expr) -> Result<Expr> {
-        self.aggregate_expr("MIN", expr)
-    }
-
-    /// Create an expression to represent the max() aggregate function
-    fn max(&self, expr: &Expr) -> Result<Expr> {
-        self.aggregate_expr("MAX", expr)
-    }
-
-    /// Create an expression to represent the sum() aggregate function
-    fn sum(&self, expr: &Expr) -> Result<Expr> {
-        self.aggregate_expr("SUM", expr)
-    }
-
-    /// Create an expression to represent the avg() aggregate function
-    fn avg(&self, expr: &Expr) -> Result<Expr> {
-        self.aggregate_expr("AVG", expr)
-    }
-
-    /// Create an expression to represent the count() aggregate function
-    fn count(&self, expr: &Expr) -> Result<Expr> {
-        self.aggregate_expr("COUNT", expr)
+    /// Sort by specified sorting expressions
+    fn sort(&self, expr: Vec<Expr>) -> Result<Arc<dyn DataFrame>> {
+        let plan = LogicalPlanBuilder::from(&self.plan).sort(expr)?.build()?;
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 
     /// Convert to logical plan
@@ -124,45 +104,25 @@ impl Table for TableImpl {
         self.plan.clone()
     }
 
-    fn collect(
-        &self,
-        ctx: &mut ExecutionContext,
-        batch_size: usize,
-    ) -> Result<Vec<RecordBatch>> {
-        ctx.collect_plan(&self.plan.clone(), batch_size)
+    // Convert the logical plan represented by this DataFrame into a physical plan and
+    // execute it
+    fn collect(&self) -> Result<Vec<RecordBatch>> {
+        let ctx = ExecutionContext::from(self.ctx_state.clone());
+        let plan = ctx.optimize(&self.plan)?;
+        let plan = ctx.create_physical_plan(&plan)?;
+        Ok(ctx.collect(plan)?)
     }
 
     /// Returns the schema from the logical plan
     fn schema(&self) -> &Schema {
         self.plan.schema().as_ref()
     }
-}
 
-impl TableImpl {
-    /// Determine the data type for a given expression
-    fn get_data_type(&self, expr: &Expr) -> Result<DataType> {
-        match expr {
-            Expr::Column(name) => Ok(self
-                .plan
-                .schema()
-                .field_with_name(name)?
-                .data_type()
-                .clone()),
-            _ => Err(ExecutionError::General(format!(
-                "Could not determine data type for expr {:?}",
-                expr
-            ))),
-        }
-    }
-
-    /// Create an expression to represent a named aggregate function
-    fn aggregate_expr(&self, name: &str, expr: &Expr) -> Result<Expr> {
-        let return_type = self.get_data_type(expr)?;
-        Ok(Expr::AggregateFunction {
-            name: name.to_string(),
-            args: vec![expr.clone()],
-            return_type,
-        })
+    fn explain(&self, verbose: bool) -> Result<Arc<dyn DataFrame>> {
+        let plan = LogicalPlanBuilder::from(&self.plan)
+            .explain(verbose)?
+            .build()?;
+        Ok(Arc::new(DataFrameImpl::new(self.ctx_state.clone(), &plan)))
     }
 }
 
@@ -171,6 +131,7 @@ mod tests {
     use super::*;
     use crate::datasource::csv::CsvReadOptions;
     use crate::execution::context::ExecutionContext;
+    use crate::logicalplan::*;
     use crate::test;
 
     #[test]
@@ -193,7 +154,7 @@ mod tests {
     fn select_expr() -> Result<()> {
         // build plan using Table API
         let t = test_table()?;
-        let t2 = t.select(vec![t.col("c1")?, t.col("c2")?, t.col("c11")?])?;
+        let t2 = t.select(vec![col("c1"), col("c2"), col("c11")])?;
         let plan = t2.to_logical_plan();
 
         // build query using SQL
@@ -207,21 +168,20 @@ mod tests {
 
     #[test]
     fn aggregate() -> Result<()> {
-        // build plan using Table API
-        let t = test_table()?;
-        let group_expr = vec![t.col("c1")?];
-        let c12 = t.col("c12")?;
+        // build plan using DataFrame API
+        let df = test_table()?;
+        let group_expr = vec![col("c1")];
         let aggr_expr = vec![
-            t.min(&c12)?,
-            t.max(&c12)?,
-            t.avg(&c12)?,
-            t.sum(&c12)?,
-            t.count(&c12)?,
+            min(col("c12")),
+            max(col("c12")),
+            avg(col("c12")),
+            sum(col("c12")),
+            count(col("c12")),
         ];
 
-        let t2 = t.aggregate(group_expr.clone(), aggr_expr.clone())?;
+        let df = df.aggregate(group_expr.clone(), aggr_expr.clone())?;
 
-        let plan = t2.to_logical_plan();
+        let plan = df.to_logical_plan();
 
         // build same plan using SQL API
         let sql = "SELECT c1, MIN(c12), MAX(c12), AVG(c12), SUM(c12), COUNT(c12) \
@@ -252,6 +212,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn explain() -> Result<()> {
+        // build query using Table API
+        let df = test_table()?;
+        let df = df
+            .select_columns(vec!["c1", "c2", "c11"])?
+            .limit(10)?
+            .explain(false)?;
+        let plan = df.to_logical_plan();
+
+        // build query using SQL
+        let sql_plan =
+            create_plan("EXPLAIN SELECT c1, c2, c11 FROM aggregate_test_100 LIMIT 10")?;
+
+        // the two plans should be identical
+        assert_same_plan(&plan, &sql_plan);
+
+        Ok(())
+    }
+
     /// Compare the formatted string representation of two plans for equality
     fn assert_same_plan(plan1: &LogicalPlan, plan2: &LogicalPlan) {
         assert_eq!(format!("{:?}", plan1), format!("{:?}", plan2));
@@ -264,7 +244,7 @@ mod tests {
         ctx.create_logical_plan(sql)
     }
 
-    fn test_table() -> Result<Arc<dyn Table + 'static>> {
+    fn test_table() -> Result<Arc<dyn DataFrame + 'static>> {
         let mut ctx = ExecutionContext::new();
         register_aggregate_csv(&mut ctx)?;
         ctx.table("aggregate_test_100")

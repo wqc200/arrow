@@ -26,8 +26,11 @@ namespace aggregate {
 
 namespace {
 
+template <typename ArrowType, typename Enable = void>
+struct ModeState {};
+
 template <typename ArrowType>
-struct ModeState {
+struct ModeState<ArrowType, enable_if_t<(sizeof(typename ArrowType::c_type) > 1)>> {
   using ThisType = ModeState<ArrowType>;
   using T = typename ArrowType::c_type;
 
@@ -36,6 +39,9 @@ struct ModeState {
       auto value = value_count.first;
       auto count = value_count.second;
       this->value_counts[value] += count;
+    }
+    if (is_floating_type<ArrowType>::value) {
+      this->nan_count += state.nan_count;
     }
   }
 
@@ -46,7 +52,9 @@ struct ModeState {
 
   template <typename ArrowType_ = ArrowType>
   enable_if_t<is_floating_type<ArrowType_>::value> MergeOne(T value) {
-    if (!std::isnan(value)) {
+    if (std::isnan(value)) {
+      ++this->nan_count;
+    } else {
       ++this->value_counts[value];
     }
   }
@@ -63,10 +71,50 @@ struct ModeState {
         mode = this_value;
       }
     }
+    if (is_floating_type<ArrowType>::value && this->nan_count > count) {
+      count = this->nan_count;
+      mode = static_cast<T>(NAN);
+    }
     return std::make_pair(mode, count);
   }
 
+  int64_t nan_count = 0;  // only make sense to floating types
   std::unordered_map<T, int64_t> value_counts{};
+};
+
+// Use array to count small integers(bool, int8, uint8), improves performance 2x ~ 6x
+template <typename ArrowType>
+struct ModeState<ArrowType, enable_if_t<(sizeof(typename ArrowType::c_type) == 1)>> {
+  using ThisType = ModeState<ArrowType>;
+  using T = typename ArrowType::c_type;
+  using Limits = std::numeric_limits<T>;
+
+  ModeState() : value_counts(Limits::max() - Limits::min() + 1) {}
+
+  void MergeFrom(const ThisType& state) {
+    std::transform(this->value_counts.cbegin(), this->value_counts.cend(),
+                   state.value_counts.cbegin(), this->value_counts.begin(),
+                   std::plus<int64_t>{});
+  }
+
+  void MergeOne(T value) { ++this->value_counts[value - Limits::min()]; }
+
+  std::pair<T, int64_t> Finalize() {
+    T mode = Limits::min();
+    int64_t count = 0;
+
+    for (int i = 0; i <= Limits::max() - Limits::min(); ++i) {
+      T this_value = static_cast<T>(i + Limits::min());
+      int64_t this_count = this->value_counts[i];
+      if (this_count > count || (this_count == count && this_value < mode)) {
+        count = this_count;
+        mode = this_value;
+      }
+    }
+    return std::make_pair(mode, count);
+  }
+
+  std::vector<int64_t> value_counts;
 };
 
 template <typename ArrowType>
@@ -106,12 +154,13 @@ struct ModeImpl : public ScalarAggregator {
     using CountType = typename TypeTraits<Int64Type>::ScalarType;
 
     std::vector<std::shared_ptr<Scalar>> values;
-    if (this->state.value_counts.empty()) {
+    auto mode_count = this->state.Finalize();
+    auto mode = mode_count.first;
+    auto count = mode_count.second;
+    if (count == 0) {
       values = {std::make_shared<ModeType>(), std::make_shared<CountType>()};
     } else {
-      auto mode_count = state.Finalize();
-      values = {std::make_shared<ModeType>(mode_count.first),
-                std::make_shared<CountType>(mode_count.second)};
+      values = {std::make_shared<ModeType>(mode), std::make_shared<CountType>(count)};
     }
     out->value = std::make_shared<StructScalar>(std::move(values), this->out_type);
   }

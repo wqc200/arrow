@@ -186,8 +186,8 @@ fn infer_file_schema<R: Read + Seek>(
 ///
 /// Files will be read in the given order untill n records have been reached.
 ///
-/// If `max_read_records` is not set, all files will be read fully to infer the schema.
 pub fn infer_schema_from_files(
+    /// If `max_read_records` is not set, all files will be read fully to infer the schema.
     files: &[String],
     delimiter: u8,
     max_read_records: Option<usize>,

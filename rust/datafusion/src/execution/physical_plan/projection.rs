@@ -23,7 +23,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::{ExecutionPlan, Partition, PhysicalExpr};
+use crate::execution::physical_plan::{ExecutionPlan, Partitioning, PhysicalExpr};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::error::Result as ArrowResult;
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
@@ -31,8 +31,8 @@ use arrow::record_batch::{RecordBatch, RecordBatchReader};
 /// Execution plan for a projection
 #[derive(Debug)]
 pub struct ProjectionExec {
-    /// The projection expressions
-    expr: Vec<Arc<dyn PhysicalExpr>>,
+    /// The projection expressions stored as tuples of (expression, output column name)
+    expr: Vec<(Arc<dyn PhysicalExpr>, String)>,
     /// The schema once the projection has been applied to the input
     schema: SchemaRef,
     /// The input plan
@@ -61,7 +61,7 @@ impl ProjectionExec {
         let schema = Arc::new(Schema::new(fields?));
 
         Ok(Self {
-            expr: expr.iter().map(|x| x.0.clone()).collect(),
+            expr,
             schema,
             input: input.clone(),
         })
@@ -74,42 +74,38 @@ impl ExecutionPlan for ProjectionExec {
         self.schema.clone()
     }
 
-    /// Get the partitions for this execution plan
-    fn partitions(&self) -> Result<Vec<Arc<dyn Partition>>> {
-        let partitions: Vec<Arc<dyn Partition>> = self
-            .input
-            .partitions()?
-            .iter()
-            .map(|p| {
-                let projection: Arc<dyn Partition> = Arc::new(ProjectionPartition {
-                    schema: self.schema.clone(),
-                    expr: self.expr.clone(),
-                    input: p.clone() as Arc<dyn Partition>,
-                });
-
-                projection
-            })
-            .collect();
-
-        Ok(partitions)
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+        vec![self.input.clone()]
     }
-}
 
-/// Represents a single partition of a projection execution plan
-#[derive(Debug)]
-struct ProjectionPartition {
-    schema: SchemaRef,
-    expr: Vec<Arc<dyn PhysicalExpr>>,
-    input: Arc<dyn Partition>,
-}
+    /// Get the output partitioning of this plan
+    fn output_partitioning(&self) -> Partitioning {
+        self.input.output_partitioning()
+    }
 
-impl Partition for ProjectionPartition {
-    /// Execute the projection
-    fn execute(&self) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
+    fn with_new_children(
+        &self,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match children.len() {
+            1 => Ok(Arc::new(ProjectionExec::try_new(
+                self.expr.clone(),
+                children[0].clone(),
+            )?)),
+            _ => Err(ExecutionError::General(
+                "ProjectionExec wrong number of children".to_string(),
+            )),
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+    ) -> Result<Arc<Mutex<dyn RecordBatchReader + Send + Sync>>> {
         Ok(Arc::new(Mutex::new(ProjectionIterator {
             schema: self.schema.clone(),
-            expr: self.expr.clone(),
-            input: self.input.execute()?,
+            expr: self.expr.iter().map(|x| x.0.clone()).collect(),
+            input: self.input.execute(partition)?,
         })))
     }
 }
@@ -168,9 +164,9 @@ mod tests {
 
         let mut partition_count = 0;
         let mut row_count = 0;
-        for partition in projection.partitions()? {
+        for partition in 0..projection.output_partitioning().partition_count() {
             partition_count += 1;
-            let iterator = partition.execute()?;
+            let iterator = projection.execute(partition)?;
             let mut iterator = iterator.lock().unwrap();
             while let Some(batch) = iterator.next_batch()? {
                 assert_eq!(1, batch.num_columns());

@@ -637,6 +637,22 @@ class TestPrimitiveModeKernel : public ::testing::Test {
     AssertModeIsNull(array);
   }
 
+  void AssertModeIsNaN(const Datum& array, int64_t expected_count) {
+    ASSERT_OK_AND_ASSIGN(Datum out, Mode(array));
+    const StructScalar& value = out.scalar_as<StructScalar>();
+
+    const auto& out_mode = checked_cast<const ModeType&>(*value.value[0]);
+    ASSERT_NE(out_mode.value, out_mode.value);  // NaN != NaN
+
+    const auto& out_count = checked_cast<const CountType&>(*value.value[1]);
+    ASSERT_EQ(expected_count, out_count.value);
+  }
+
+  void AssertModeIsNaN(const std::string& json, int64_t expected_count) {
+    auto array = ArrayFromJSON(type_singleton(), json);
+    AssertModeIsNaN(array, expected_count);
+  }
+
   std::shared_ptr<DataType> type_singleton() { return Traits::type_singleton(); }
 };
 
@@ -647,6 +663,8 @@ template <typename ArrowType>
 class TestFloatingModeKernel : public TestPrimitiveModeKernel<ArrowType> {};
 
 class TestBooleanModeKernel : public TestPrimitiveModeKernel<BooleanType> {};
+
+class TestInt8ModeKernelValueRange : public TestPrimitiveModeKernel<Int8Type> {};
 
 TEST_F(TestBooleanModeKernel, Basics) {
   this->AssertModeIs("[false, false]", false, 2);
@@ -678,11 +696,19 @@ TYPED_TEST(TestFloatingModeKernel, Floats) {
   this->AssertModeIs("[Inf, -Inf, Inf, -Inf]", -INFINITY, 2);
 
   this->AssertModeIs("[null, null, 2, null, 1]", 1, 1);
-  this->AssertModeIs("[NaN, NaN, 1]", 1, 1);
+  this->AssertModeIs("[NaN, NaN, 1, null, 1]", 1, 2);
+
   this->AssertModeIsNull("[null, null, null]");
-  this->AssertModeIsNull("[NaN, NaN, null]");
-  this->AssertModeIsNull("[NaN, NaN, NaN]");
   this->AssertModeIsNull("[]");
+
+  this->AssertModeIsNaN("[NaN, NaN, 1]", 2);
+  this->AssertModeIsNaN("[NaN, NaN, null]", 2);
+  this->AssertModeIsNaN("[NaN, NaN, NaN]", 3);
+}
+
+TEST_F(TestInt8ModeKernelValueRange, Basics) {
+  this->AssertModeIs("[0, 127, -128, -128]", -128, 2);
+  this->AssertModeIs("[127, 127, 127]", 127, 3);
 }
 
 }  // namespace compute

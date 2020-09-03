@@ -1454,7 +1454,7 @@ if(ARROW_JEMALLOC)
     BUILD_IN_SOURCE 1
     BUILD_COMMAND ${JEMALLOC_BUILD_COMMAND}
     BUILD_BYPRODUCTS "${JEMALLOC_STATIC_LIB}"
-    INSTALL_COMMAND ${MAKE} install)
+    INSTALL_COMMAND ${MAKE} -j1 install)
 
   # Don't use the include directory directly so that we can point to a path
   # that is unique to our codebase.
@@ -2632,7 +2632,7 @@ macro(build_awssdk)
   set(AWSSDK_CMAKE_ARGS
       -DCMAKE_BUILD_TYPE=Release
       -DCMAKE_INSTALL_LIBDIR=lib
-      -DBUILD_ONLY=s3;core;config
+      -DBUILD_ONLY=s3;core;config;identity-management;sts
       -DENABLE_UNITY_BUILD=on
       -DENABLE_TESTING=off
       "-DCMAKE_C_FLAGS=${EP_C_FLAGS}"
@@ -2646,7 +2646,16 @@ macro(build_awssdk)
     AWSSDK_S3_SHARED_LIB
     "${AWSSDK_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}aws-cpp-sdk-s3${CMAKE_SHARED_LIBRARY_SUFFIX}"
     )
-  set(AWSSDK_SHARED_LIBS "${AWSSDK_CORE_SHARED_LIB}" "${AWSSDK_S3_SHARED_LIB}")
+  set(
+    AWSSDK_IAM_SHARED_LIB
+    "${AWSSDK_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}aws-cpp-sdk-identity-management${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+  set(
+    AWSSDK_STS_SHARED_LIB
+    "${AWSSDK_PREFIX}/lib/${CMAKE_SHARED_LIBRARY_PREFIX}aws-cpp-sdk-sts${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+  set(AWSSDK_SHARED_LIBS "${AWSSDK_CORE_SHARED_LIB}" "${AWSSDK_S3_SHARED_LIB}"
+                         "${AWSSDK_IAM_SHARED_LIB}" "${AWSSDK_STS_SHARED_LIB}")
 
   externalproject_add(awssdk_ep
                       ${EP_LOG_OPTIONS}
@@ -2668,14 +2677,24 @@ if(ARROW_S3)
 
   # Need to customize the find_package() call, so cannot call resolve_dependency()
   if(AWSSDK_SOURCE STREQUAL "AUTO")
-    find_package(AWSSDK COMPONENTS config s3 transfer)
+    find_package(AWSSDK
+                 COMPONENTS config
+                            s3
+                            transfer
+                            identity-management
+                            sts)
     if(NOT AWSSDK_FOUND)
       build_awssdk()
     endif()
   elseif(AWSSDK_SOURCE STREQUAL "BUNDLED")
     build_awssdk()
   elseif(AWSSDK_SOURCE STREQUAL "SYSTEM")
-    find_package(AWSSDK REQUIRED COMPONENTS config s3 transfer)
+    find_package(AWSSDK REQUIRED
+                 COMPONENTS config
+                            s3
+                            transfer
+                            identity-management
+                            sts)
   endif()
 
   include_directories(SYSTEM ${AWSSDK_INCLUDE_DIR})
@@ -2697,6 +2716,6 @@ message(STATUS "All bundled static libraries: ${ARROW_BUNDLED_STATIC_LIBS}")
 
 # Write out the package configurations.
 
-configure_file("src/arrow/util/config.h.cmake" "src/arrow/util/config.h")
+configure_file("src/arrow/util/config.h.cmake" "src/arrow/util/config.h" ESCAPE_QUOTES)
 install(FILES "${ARROW_BINARY_DIR}/src/arrow/util/config.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/arrow/util")

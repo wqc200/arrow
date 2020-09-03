@@ -20,14 +20,14 @@
 use std::fmt;
 
 use arrow::array::ArrayRef;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Schema};
 
 use crate::error::Result;
 use crate::execution::physical_plan::PhysicalExpr;
 
 use arrow::record_batch::RecordBatch;
 use fmt::{Debug, Formatter};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// Scalar UDF
 pub type ScalarUdf = Arc<dyn Fn(&[ArrayRef]) -> Result<ArrayRef> + Send + Sync>;
@@ -38,18 +38,30 @@ pub struct ScalarFunction {
     /// Function name
     pub name: String,
     /// Function argument meta-data
-    pub args: Vec<Field>,
+    pub arg_types: Vec<DataType>,
     /// Return type
     pub return_type: DataType,
     /// UDF implementation
     pub fun: ScalarUdf,
 }
 
+/// Something which provides information for particular scalar functions
+pub trait ScalarFunctionRegistry {
+    /// Return ScalarFunction for `name`
+    fn lookup(&self, name: &str) -> Option<Arc<ScalarFunction>>;
+}
+
+impl ScalarFunctionRegistry for HashMap<String, Arc<ScalarFunction>> {
+    fn lookup(&self, name: &str) -> Option<Arc<ScalarFunction>> {
+        self.get(name).and_then(|func| Some(func.clone()))
+    }
+}
+
 impl Debug for ScalarFunction {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScalarFunction")
             .field("name", &self.name)
-            .field("args", &self.args)
+            .field("arg_types", &self.arg_types)
             .field("return_type", &self.return_type)
             .field("fun", &"<FUNC>")
             .finish()
@@ -60,13 +72,13 @@ impl ScalarFunction {
     /// Create a new ScalarFunction
     pub fn new(
         name: &str,
-        args: Vec<Field>,
+        arg_types: Vec<DataType>,
         return_type: DataType,
         fun: ScalarUdf,
     ) -> Self {
         Self {
             name: name.to_owned(),
-            args,
+            arg_types,
             return_type,
             fun,
         }

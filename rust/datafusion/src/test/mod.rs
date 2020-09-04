@@ -17,10 +17,11 @@
 
 //! Common unit test utility methods
 
+use crate::datasource::{MemTable, TableProvider};
 use crate::error::Result;
 use crate::execution::context::ExecutionContext;
-use crate::execution::physical_plan::ExecutionPlan;
-use crate::logicalplan::{Expr, LogicalPlan, LogicalPlanBuilder};
+use crate::logical_plan::{Expr, LogicalPlan, LogicalPlanBuilder};
+use crate::physical_plan::ExecutionPlan;
 use arrow::array;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -31,13 +32,30 @@ use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 use tempdir::TempDir;
 
+pub fn create_table_dual() -> Box<dyn TableProvider + Send + Sync> {
+    let dual_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        dual_schema.clone(),
+        vec![
+            Arc::new(array::Int32Array::from(vec![1])),
+            Arc::new(array::StringArray::from(vec!["a"])),
+        ],
+    )
+    .unwrap();
+    let provider = MemTable::new(dual_schema.clone(), vec![vec![batch.clone()]]).unwrap();
+    Box::new(provider)
+}
+
 /// Get the value of the ARROW_TEST_DATA environment variable
 pub fn arrow_testdata_path() -> String {
     env::var("ARROW_TEST_DATA").expect("ARROW_TEST_DATA not defined")
 }
 
 /// Execute a physical plan and collect the results
-pub fn execute(plan: &dyn ExecutionPlan) -> Result<Vec<RecordBatch>> {
+pub fn execute(plan: Arc<dyn ExecutionPlan>) -> Result<Vec<RecordBatch>> {
     let ctx = ExecutionContext::new();
     ctx.collect(plan)
 }
@@ -228,6 +246,14 @@ pub fn max(expr: Expr) -> Expr {
     Expr::AggregateFunction {
         name: "MAX".to_owned(),
         args: vec![expr],
-        return_type: DataType::Float64,
     }
 }
+
+pub fn min(expr: Expr) -> Expr {
+    Expr::AggregateFunction {
+        name: "MIN".to_owned(),
+        args: vec![expr],
+    }
+}
+
+pub mod variable;

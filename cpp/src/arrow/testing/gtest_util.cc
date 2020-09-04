@@ -135,22 +135,24 @@ void AssertArraysEqual(const Array& expected, const Array& actual, bool verbose)
       });
 }
 
-void AssertArraysApproxEqual(const Array& expected, const Array& actual, bool verbose) {
+void AssertArraysApproxEqual(const Array& expected, const Array& actual, bool verbose,
+                             const EqualOptions& option) {
   return AssertArraysEqualWith(
       expected, actual, verbose,
-      [](const Array& expected, const Array& actual, std::stringstream* diff) {
-        return expected.ApproxEquals(actual, EqualOptions().diff_sink(diff));
+      [&option](const Array& expected, const Array& actual, std::stringstream* diff) {
+        return expected.ApproxEquals(actual, option.diff_sink(diff));
       });
 }
 
-void AssertScalarsEqual(const Scalar& expected, const Scalar& actual, bool verbose) {
+void AssertScalarsEqual(const Scalar& expected, const Scalar& actual, bool verbose,
+                        const EqualOptions& options) {
   std::stringstream diff;
   // ARROW-8956, ScalarEquals returns false when both are null
   if (!expected.is_valid && !actual.is_valid) {
     // We consider both being null to be equal in this function
     return;
   }
-  if (!expected.Equals(actual)) {
+  if (!expected.Equals(actual, options)) {
     if (verbose) {
       diff << "Expected:\n" << expected.ToString();
       diff << "\nActual:\n" << actual.ToString();
@@ -230,11 +232,20 @@ void AssertBufferEqual(const Buffer& buffer, const Buffer& expected) {
 }
 
 template <typename T>
+std::string ToStringWithMetadata(const T& t, bool show_metadata) {
+  return t.ToString(show_metadata);
+}
+
+std::string ToStringWithMetadata(const DataType& t, bool show_metadata) {
+  return t.ToString();
+}
+
+template <typename T>
 void AssertFingerprintablesEqual(const T& left, const T& right, bool check_metadata,
                                  const char* types_plural) {
   ASSERT_TRUE(left.Equals(right, check_metadata))
-      << types_plural << " '" << left.ToString() << "' and '" << right.ToString()
-      << "' should have compared equal";
+      << types_plural << " '" << ToStringWithMetadata(left, check_metadata) << "' and '"
+      << ToStringWithMetadata(right, check_metadata) << "' should have compared equal";
   auto lfp = left.fingerprint();
   auto rfp = right.fingerprint();
   // Note: all types tested in this file should implement fingerprinting,
@@ -243,8 +254,10 @@ void AssertFingerprintablesEqual(const T& left, const T& right, bool check_metad
     lfp += left.metadata_fingerprint();
     rfp += right.metadata_fingerprint();
   }
-  ASSERT_EQ(lfp, rfp) << "Fingerprints for " << types_plural << " '" << left.ToString()
-                      << "' and '" << right.ToString() << "' should have compared equal";
+  ASSERT_EQ(lfp, rfp) << "Fingerprints for " << types_plural << " '"
+                      << ToStringWithMetadata(left, check_metadata) << "' and '"
+                      << ToStringWithMetadata(right, check_metadata)
+                      << "' should have compared equal";
 }
 
 template <typename T>
@@ -260,8 +273,8 @@ template <typename T>
 void AssertFingerprintablesNotEqual(const T& left, const T& right, bool check_metadata,
                                     const char* types_plural) {
   ASSERT_FALSE(left.Equals(right, check_metadata))
-      << types_plural << " '" << left.ToString() << "' and '" << right.ToString()
-      << "' should have compared unequal";
+      << types_plural << " '" << ToStringWithMetadata(left, check_metadata) << "' and '"
+      << ToStringWithMetadata(right, check_metadata) << "' should have compared unequal";
   auto lfp = left.fingerprint();
   auto rfp = right.fingerprint();
   // Note: all types tested in this file should implement fingerprinting,
@@ -271,8 +284,9 @@ void AssertFingerprintablesNotEqual(const T& left, const T& right, bool check_me
       lfp += left.metadata_fingerprint();
       rfp += right.metadata_fingerprint();
     }
-    ASSERT_NE(lfp, rfp) << "Fingerprints for " << types_plural << " '" << left.ToString()
-                        << "' and '" << right.ToString()
+    ASSERT_NE(lfp, rfp) << "Fingerprints for " << types_plural << " '"
+                        << ToStringWithMetadata(left, check_metadata) << "' and '"
+                        << ToStringWithMetadata(right, check_metadata)
                         << "' should have compared unequal";
   }
 }

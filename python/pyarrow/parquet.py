@@ -1409,7 +1409,8 @@ class _ParquetDatasetV2:
                 fragment = parquet_format.make_fragment(path_or_paths)
                 self._dataset = ds.FileSystemDataset(
                     [fragment], schema=fragment.physical_schema,
-                    format=parquet_format
+                    format=parquet_format,
+                    filesystem=fragment.filesystem
                 )
                 return
 
@@ -1521,7 +1522,7 @@ use_legacy_dataset : bool, default False
     pyarrow 1.0.0. Among other things, this allows to pass `filters`
     for all columns and not only the partition keys, enables
     different partitioning schemes, etc.
-    Set to False to use the legacy behaviour.
+    Set to True to use the legacy behaviour.
 ignore_prefixes : list, optional
     Files matching any of these prefixes will be ignored by the
     discovery process if use_legacy_dataset=False.

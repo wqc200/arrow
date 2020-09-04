@@ -18,11 +18,13 @@
 //! Query optimizer traits
 
 use crate::error::Result;
-use crate::logicalplan::LogicalPlan;
+use crate::logical_plan::LogicalPlan;
 
 /// An optimizer rules performs a transformation on a logical plan to produce an optimized
 /// logical plan.
 pub trait OptimizerRule {
     /// Perform optimizations on the plan
     fn optimize(&mut self, plan: &LogicalPlan) -> Result<LogicalPlan>;
+    /// Produce a human readable name for this optimizer rule
+    fn name(&self) -> &str;
 }

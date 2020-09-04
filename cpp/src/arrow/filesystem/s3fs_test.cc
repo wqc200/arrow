@@ -22,12 +22,20 @@
 #include <utility>
 #include <vector>
 
-// boost/process/detail/windows/handle_workaround.hpp doesn't work
-// without BOOST_USE_WINDOWS_H with MinGW because MinGW doesn't
-// provide __kernel_entry without winternl.h.
+// This boost/asio/io_context.hpp include is needless for no MinGW
+// build.
 //
-// See also:
-// https://github.com/boostorg/process/blob/develop/include/boost/process/detail/windows/handle_workaround.hpp
+// This is for including boost/asio/detail/socket_types.hpp before any
+// "#include <windows.h>". boost/asio/detail/socket_types.hpp doesn't
+// work if windows.h is already included. boost/process.h ->
+// boost/process/args.hpp -> boost/process/detail/basic_cmd.hpp
+// includes windows.h. boost/process/args.hpp is included before
+// boost/process/async.h that includes
+// boost/asio/detail/socket_types.hpp implicitly is included.
+#include <boost/asio/io_context.hpp>
+// We need BOOST_USE_WINDOWS_H definition with MinGW when we use
+// boost/process.hpp. See ARROW_BOOST_PROCESS_COMPILE_DEFINITIONS in
+// cpp/cmake_modules/BuildUtils.cmake for details.
 #include <boost/process.hpp>
 
 #include <gtest/gtest.h>
@@ -51,6 +59,7 @@
 #include <aws/s3/model/CreateBucketRequest.h>
 #include <aws/s3/model/GetObjectRequest.h>
 #include <aws/s3/model/PutObjectRequest.h>
+#include <aws/sts/STSClient.h>
 
 #include "arrow/filesystem/filesystem.h"
 #include "arrow/filesystem/s3_internal.h"
@@ -61,13 +70,16 @@
 #include "arrow/status.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/util.h"
+#include "arrow/util/io_util.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/macros.h"
 
 namespace arrow {
 namespace fs {
 
+using ::arrow::internal::DelEnvVar;
 using ::arrow::internal::PlatformFilename;
+using ::arrow::internal::SetEnvVar;
 using ::arrow::internal::UriEscape;
 
 using ::arrow::fs::internal::ConnectRetryStrategy;
@@ -152,7 +164,18 @@ void AssertObjectContents(Aws::S3::S3Client* client, const std::string& bucket,
 ////////////////////////////////////////////////////////////////////////////
 // S3Options tests
 
-TEST(S3Options, FromUri) {
+class S3OptionsTest : public ::testing::Test {
+ public:
+  void SetUp() {
+    // we set this environment variable to speed up tests by ensuring
+    // DefaultAWSCredentialsProviderChain does not query (inaccessible)
+    // EC2 metadata endpoint
+    ASSERT_OK(SetEnvVar("AWS_EC2_METADATA_DISABLED", "true"));
+  }
+  void TearDown() { ASSERT_OK(DelEnvVar("AWS_EC2_METADATA_DISABLED")); }
+};
+
+TEST_F(S3OptionsTest, FromUri) {
   std::string path;
   S3Options options;
 
@@ -195,6 +218,37 @@ TEST(S3Options, FromUri) {
 
   // Missing bucket name
   ASSERT_RAISES(Invalid, S3Options::FromUri("s3:///foo/bar/", &path));
+}
+
+TEST_F(S3OptionsTest, FromAccessKey) {
+  S3Options options;
+
+  // session token is optional and should default to empty string
+  options = S3Options::FromAccessKey("access", "secret");
+  ASSERT_EQ(options.GetAccessKey(), "access");
+  ASSERT_EQ(options.GetSecretKey(), "secret");
+  ASSERT_EQ(options.GetSessionToken(), "");
+
+  options = S3Options::FromAccessKey("access", "secret", "token");
+  ASSERT_EQ(options.GetAccessKey(), "access");
+  ASSERT_EQ(options.GetSecretKey(), "secret");
+  ASSERT_EQ(options.GetSessionToken(), "token");
+}
+
+TEST_F(S3OptionsTest, FromAssumeRole) {
+  S3Options options;
+
+  // arn should be only required argument
+  options = S3Options::FromAssumeRole("my_role_arn");
+  options = S3Options::FromAssumeRole("my_role_arn", "session");
+  options = S3Options::FromAssumeRole("my_role_arn", "session", "id");
+  options = S3Options::FromAssumeRole("my_role_arn", "session", "id", 42);
+
+  // test w/ custom STSClient (will not use DefaultAWSCredentialsProviderChain)
+  Aws::Auth::AWSCredentials test_creds = Aws::Auth::AWSCredentials("access", "secret");
+  std::shared_ptr<Aws::STS::STSClient> sts_client =
+      std::make_shared<Aws::STS::STSClient>(Aws::STS::STSClient(test_creds));
+  options = S3Options::FromAssumeRole("my_role_arn", "session", "id", 42, sts_client);
 }
 
 ////////////////////////////////////////////////////////////////////////////

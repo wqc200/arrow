@@ -22,6 +22,7 @@
 namespace arrow {
 
 using internal::AddWithOverflow;
+using internal::DivideWithOverflow;
 using internal::MultiplyWithOverflow;
 using internal::SubtractWithOverflow;
 
@@ -80,7 +81,7 @@ struct AddChecked {
   template <typename T, typename Arg0, typename Arg1>
   enable_if_integer<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
     static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
-    T result;
+    T result = 0;
     if (ARROW_PREDICT_FALSE(AddWithOverflow(left, right, &result))) {
       ctx->SetStatus(Status::Invalid("overflow"));
     }
@@ -115,7 +116,7 @@ struct SubtractChecked {
   template <typename T, typename Arg0, typename Arg1>
   enable_if_integer<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
     static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
-    T result;
+    T result = 0;
     if (ARROW_PREDICT_FALSE(SubtractWithOverflow(left, right, &result))) {
       ctx->SetStatus(Status::Invalid("overflow"));
     }
@@ -172,7 +173,7 @@ struct MultiplyChecked {
   template <typename T, typename Arg0, typename Arg1>
   enable_if_integer<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
     static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
-    T result;
+    T result = 0;
     if (ARROW_PREDICT_FALSE(MultiplyWithOverflow(left, right, &result))) {
       ctx->SetStatus(Status::Invalid("overflow"));
     }
@@ -183,6 +184,52 @@ struct MultiplyChecked {
   enable_if_floating_point<T> Call(KernelContext*, Arg0 left, Arg1 right) {
     static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
     return left * right;
+  }
+};
+
+struct Divide {
+  template <typename T, typename Arg0, typename Arg1>
+  static enable_if_floating_point<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
+    return left / right;
+  }
+
+  template <typename T, typename Arg0, typename Arg1>
+  static enable_if_integer<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
+    T result;
+    if (ARROW_PREDICT_FALSE(DivideWithOverflow(left, right, &result))) {
+      if (right == 0) {
+        ctx->SetStatus(Status::Invalid("divide by zero"));
+      } else {
+        result = 0;
+      }
+    }
+    return result;
+  }
+};
+
+struct DivideChecked {
+  template <typename T, typename Arg0, typename Arg1>
+  static enable_if_integer<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
+    static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
+    T result;
+    if (ARROW_PREDICT_FALSE(DivideWithOverflow(left, right, &result))) {
+      if (right == 0) {
+        ctx->SetStatus(Status::Invalid("divide by zero"));
+      } else {
+        ctx->SetStatus(Status::Invalid("overflow"));
+      }
+    }
+    return result;
+  }
+
+  template <typename T, typename Arg0, typename Arg1>
+  static enable_if_floating_point<T> Call(KernelContext* ctx, Arg0 left, Arg1 right) {
+    static_assert(std::is_same<T, Arg0>::value && std::is_same<T, Arg1>::value, "");
+    if (ARROW_PREDICT_FALSE(right == 0)) {
+      ctx->SetStatus(Status::Invalid("divide by zero"));
+      return 0;
+    }
+    return left / right;
   }
 };
 
@@ -277,6 +324,14 @@ void RegisterScalarArithmetic(FunctionRegistry* registry) {
   auto multiply_checked =
       MakeArithmeticFunctionNotNull<MultiplyChecked>("multiply_checked");
   DCHECK_OK(registry->AddFunction(std::move(multiply_checked)));
+
+  // ----------------------------------------------------------------------
+  auto divide = MakeArithmeticFunctionNotNull<Divide>("divide");
+  DCHECK_OK(registry->AddFunction(std::move(divide)));
+
+  // ----------------------------------------------------------------------
+  auto divide_checked = MakeArithmeticFunctionNotNull<DivideChecked>("divide_checked");
+  DCHECK_OK(registry->AddFunction(std::move(divide_checked)));
 }
 
 }  // namespace internal

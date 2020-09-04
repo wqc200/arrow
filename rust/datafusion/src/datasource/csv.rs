@@ -43,14 +43,15 @@ use std::string::String;
 use std::sync::Arc;
 
 use crate::datasource::TableProvider;
-use crate::error::Result;
-use crate::execution::physical_plan::csv::CsvExec;
-pub use crate::execution::physical_plan::csv::CsvReadOptions;
-use crate::execution::physical_plan::{ExecutionPlan, Partition};
+use crate::error::{ExecutionError, Result};
+use crate::physical_plan::csv::CsvExec;
+pub use crate::physical_plan::csv::CsvReadOptions;
+use crate::physical_plan::{common, ExecutionPlan};
 
 /// Represents a CSV file with a provided schema
 pub struct CsvFile {
-    filename: String,
+    /// Path to a single CSV file or a directory containing one of more CSV files
+    path: String,
     schema: SchemaRef,
     has_header: bool,
     delimiter: u8,
@@ -59,14 +60,21 @@ pub struct CsvFile {
 
 impl CsvFile {
     /// Attempt to initialize a new `CsvFile` from a file path
-    pub fn try_new(filename: &str, options: CsvReadOptions) -> Result<Self> {
+    pub fn try_new(path: &str, options: CsvReadOptions) -> Result<Self> {
         let schema = Arc::new(match options.schema {
             Some(s) => s.clone(),
-            None => CsvExec::try_infer_schema(filename, &options)?,
+            None => {
+                let mut filenames: Vec<String> = vec![];
+                common::build_file_list(path, &mut filenames, options.file_extension)?;
+                if filenames.is_empty() {
+                    return Err(ExecutionError::General("No files found".to_string()));
+                }
+                CsvExec::try_infer_schema(&filenames, &options)?
+            }
         });
 
         Ok(Self {
-            filename: String::from(filename),
+            path: String::from(path),
             schema,
             has_header: options.has_header,
             delimiter: options.delimiter,
@@ -84,9 +92,9 @@ impl TableProvider for CsvFile {
         &self,
         projection: &Option<Vec<usize>>,
         batch_size: usize,
-    ) -> Result<Vec<Arc<dyn Partition>>> {
-        let exec = CsvExec::try_new(
-            &self.filename,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(CsvExec::try_new(
+            &self.path,
             CsvReadOptions::new()
                 .schema(&self.schema)
                 .has_header(self.has_header)
@@ -94,8 +102,7 @@ impl TableProvider for CsvFile {
                 .file_extension(self.file_extension.as_str()),
             projection.clone(),
             batch_size,
-        )?;
-        exec.partitions()
+        )?))
     }
 }
 

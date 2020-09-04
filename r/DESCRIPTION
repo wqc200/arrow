@@ -1,6 +1,6 @@
 Package: arrow
 Title: Integration to 'Apache' 'Arrow'
-Version: 1.0.0.9000
+Version: 1.0.1.9000
 Authors@R: c(
     person("Romain", "Fran\u00e7ois", email = "romain@rstudio.com", role = c("aut"), comment = c(ORCID = "0000-0002-2444-4226")),
     person("Jeroen", "Ooms", email = "jeroen@berkeley.edu", role = c("aut")),
@@ -16,22 +16,19 @@ Description: 'Apache' 'Arrow' <https://arrow.apache.org/> is a cross-language
     package provides an interface to the 'Arrow C++' library.
 Depends: R (>= 3.1)
 License: Apache License (>= 2.0)
-URL: https://github.com/apache/arrow/, https://arrow.apache.org/docs/r
+URL: https://github.com/apache/arrow/, https://arrow.apache.org/docs/r/
 BugReports: https://issues.apache.org/jira/projects/ARROW/issues
 Encoding: UTF-8
 Language: en-US
 LazyData: true
 SystemRequirements: C++11
 Biarch: true
-LinkingTo:
-    Rcpp (>= 1.0.1)
 Imports:
     assertthat,
     bit64,
     methods,
     purrr,
     R6,
-    Rcpp (>= 1.0.1),
     rlang,
     tidyselect,
     utils,
@@ -65,8 +62,12 @@ Collate:
     'compute.R'
     'config.R'
     'csv.R'
-    'dataset-write.R'
     'dataset.R'
+    'dataset-factory.R'
+    'dataset-format.R'
+    'dataset-partition.R'
+    'dataset-scan.R'
+    'dataset-write.R'
     'deprecated.R'
     'dictionary.R'
     'record-batch.R'

@@ -19,6 +19,7 @@
 //! queried by DataFusion. This allows data to be pre-loaded into memory and then
 //! repeatedly queried without incurring additional file I/O overhead.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
@@ -26,53 +27,53 @@ use arrow::record_batch::RecordBatch;
 
 use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::memory::MemoryExec;
-use crate::execution::physical_plan::ExecutionPlan;
+use crate::physical_plan::memory::MemoryExec;
+use crate::physical_plan::ExecutionPlan;
 
-/// In-memory table
-pub struct MemTable {
+pub struct MemorySource {
     batches: Vec<Vec<RecordBatch>>,
 }
 
-impl MemTable {
+impl MemorySource {
     /// Create a new in-memory table from the provided schema and record batches
-    pub fn new(partitions: Vec<Vec<RecordBatch>>) -> Result<Self> {
-        if partitions.iter().all(|partition| {
-            partition
-                .iter()
-                .all(|batches| batches.schema().as_ref() == schema.as_ref())
-        }) {
-            Ok(Self {
-                batches: partitions,
-            })
-        } else {
-            Err(ExecutionError::General(
-                "Mismatch between schema and batches".to_string(),
-            ))
+    pub fn new(batches: Vec<Vec<RecordBatch>>) -> Result<Self> {
+        Ok(Self {
+            batches
+        })
+    }
+}
+
+/// In-memory table
+pub struct MemTable {
+    pub source: HashMap<String, Arc<MemorySource>>,
+}
+
+impl MemTable {
+    /// Create a new in-memory table
+    pub fn new() -> Self {
+        Self {
+            source: HashMap::new(),
         }
     }
 
-    /// Create a mem table by reading from another data source
-    pub fn load(schema: SchemaRef, t: &dyn TableProvider) -> Result<Self> {
-        let exec = t.scan("default", "test", schema, &None, 1024 * 1024)?;
-
-        let mut data: Vec<Vec<RecordBatch>> =
-            Vec::with_capacity(exec.output_partitioning().partition_count());
-        for partition in 0..exec.output_partitioning().partition_count() {
-            let it = exec.execute(partition)?;
-            let mut it = it.lock().unwrap();
-            let mut partition_batches = vec![];
-            while let Ok(Some(batch)) = it.next_batch() {
-                partition_batches.push(batch);
-            }
-            data.push(partition_batches);
-        }
-
-        MemTable::new(data)
+    /// Create a new in-memory table from the provided compound table name and record batches
+    pub fn add_source(
+        &mut self,
+        schema_name: &str,
+        table_name: &str,
+        partitions: Vec<Vec<RecordBatch>>
+    ) {
+        let compound_name = [schema_name, table_name].join(".");
+        let source = MemorySource::new(partitions)?;
+        self.source.insert(compound_name.to_string(), Arc::new(source));
     }
 }
 
 impl TableProvider for MemTable {
+    fn name(&self) -> String {
+        "memory".to_string()
+    }
+
     fn scan(
         &self,
         schema_name: &str,
@@ -81,6 +82,18 @@ impl TableProvider for MemTable {
         projection: &Option<Vec<usize>>,
         _batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let compound_name = [schema_name, table_name].join(".");
+        let source;
+        if let Some(s) = self.source.get(compound_name).map(|s| s) {
+            source = s
+        } else {
+            return Err(ExecutionError::General(format!(
+                "Source not found {}.{}",
+                schema_name,
+                table_name
+            )))
+        }
+
         let columns: Vec<usize> = match projection {
             Some(p) => p.clone(),
             None => {
@@ -109,7 +122,7 @@ impl TableProvider for MemTable {
         let projected_schema = Arc::new(Schema::new(projected_columns?));
 
         Ok(Arc::new(MemoryExec::try_new(
-            &self.batches.clone(),
+            &source.batches,
             projected_schema,
             projection.clone(),
         )?))
@@ -139,7 +152,8 @@ mod tests {
             ],
         )?;
 
-        let provider = MemTable::new(vec![vec![batch]])?;
+        let mut provider = MemTable::new();
+        provider.add_source("default", "test",vec![vec![batch]]);
 
         // scan with projection
         let exec = provider.scan("default", "test", schema, &Some(vec![2, 1]), 1024)?;
@@ -170,7 +184,8 @@ mod tests {
             ],
         )?;
 
-        let provider = MemTable::new(vec![vec![batch]])?;
+        let mut provider = MemTable::new();
+        provider.add_source("default", "test",vec![vec![batch]]);
 
         let exec = provider.scan("default", "test", schema, &None, 1024)?;
         let it = exec.execute(0)?;
@@ -198,7 +213,8 @@ mod tests {
             ],
         )?;
 
-        let provider = MemTable::new(vec![vec![batch]])?;
+        let mut provider = MemTable::new();
+        provider.add_source("default", "test",vec![vec![batch]]);
 
         let projection: Vec<usize> = vec![0, 4];
 
@@ -208,43 +224,6 @@ mod tests {
             }
             _ => assert!(false, "Scan should failed on invalid projection"),
         };
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_schema_validation() -> Result<()> {
-        let schema1 = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-            Field::new("c", DataType::Int32, false),
-        ]));
-
-        let schema2 = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Float64, false),
-            Field::new("c", DataType::Int32, false),
-        ]));
-
-        let batch = RecordBatch::try_new(
-            schema1.clone(),
-            vec![
-                Arc::new(Int32Array::from(vec![1, 2, 3])),
-                Arc::new(Int32Array::from(vec![4, 5, 6])),
-                Arc::new(Int32Array::from(vec![7, 8, 9])),
-            ],
-        )?;
-
-        match MemTable::new(schema2, vec![vec![batch]]) {
-            Err(ExecutionError::General(e)) => assert_eq!(
-                "\"Mismatch between schema and batches\"",
-                format!("{:?}", e)
-            ),
-            _ => assert!(
-                false,
-                "MemTable::new should have failed due to schema mismatch"
-            ),
-        }
 
         Ok(())
     }

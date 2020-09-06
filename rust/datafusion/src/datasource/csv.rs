@@ -45,22 +45,9 @@ use std::sync::Arc;
 
 use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::csv::CsvExec;
-pub use crate::execution::physical_plan::csv::CsvReadOptions;
-use crate::execution::physical_plan::{common, ExecutionPlan};
-
-pub fn csv_infer_schema(path: &str, options: CsvReadOptions) -> Result<SchemaRef> {
-    let mut filenames: Vec<String> = vec![];
-    common::build_file_list(path, &mut filenames, options.file_extension.as_str())?;
-    if filenames.is_empty() {
-        return Err(ExecutionError::General("No files found".to_string()));
-    }
-
-    let schema = CsvExec::try_infer_schema(&filenames, &options)?;
-
-    let schema_ref = Arc::new(schema);
-    Ok(schema_ref)
-}
+use crate::physical_plan::csv::CsvExec;
+pub use crate::physical_plan::csv::CsvReadOptions;
+use crate::physical_plan::{common, ExecutionPlan};
 
 pub struct CsvSource {
     path: String,
@@ -68,7 +55,7 @@ pub struct CsvSource {
 }
 
 impl CsvSource {
-    /// Create a new in-memory table from the provided schema and record batches
+    /// Create a new csv source from the provided path and options
     pub fn new(path: &str, options: CsvReadOptions) -> Result<Self> {
         Ok(Self {
             path: path.to_string(),
@@ -79,29 +66,36 @@ impl CsvSource {
 
 /// Represents a CSV file with a provided schema
 pub struct CsvFile {
-    pub source: HashMap<String, Box<CsvSource>>,
+    pub source: HashMap<String, Arc<CsvSource>>,
 }
 
 impl CsvFile {
-    pub fn new() -> Result<Self> {
-        Ok(Self {
+    /// Create a new csv table
+    pub fn new() -> Self {
+        Self {
             source: HashMap::new(),
-        })
+        }
     }
 
-    /// Attempt to initialize a new `CsvFile` from a file path
-    pub fn register_source(
+    /// Attempt to add a new `CsvSource` into `CsvFile`
+    pub fn add_source(
         &mut self,
-        compound_name: &str,
+        schema_name: &str,
+        table_name: &str,
         path: &str,
         options: CsvReadOptions,
     ) {
-        let cf = CsvSource::new(path, options)?;
-        self.source.insert(compound_name.to_string(), Box::new(cf));
+        let compound_name = [schema_name, table_name].join(".");
+        let source = CsvSource::new(path, options)?;
+        self.source.insert(compound_name.to_string(), Arc::new(source));
     }
 }
 
 impl TableProvider for CsvFile {
+    fn name(&self) -> String {
+        "csv".to_string()
+    }
+
     fn scan(
         &self,
         schema_name: &str,
@@ -111,21 +105,24 @@ impl TableProvider for CsvFile {
         batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let compound_name = [schema_name, table_name].join(".");
-        match self.source.get(compound_name).map(|cf| cf) {
-            Some(cf) => {
-                Ok(Arc::new(CsvExec::try_new(
-                    cf.path.as_str(),
-                    table_meta,
-                    cf.options,
-                    projection.clone(),
-                    batch_size,
-                )?))
-            }
-            _ => Err(ExecutionError::General(format!(
-                "Csv table name not found {}",
+        let source;
+        if let Some(s) = self.source.get(compound_name).map(|s| s) {
+            source = s
+        } else {
+            return Err(ExecutionError::General(format!(
+                "Source not found {}.{}",
+                schema_name,
                 table_name
-            ))),
+            )))
         }
+
+        Ok(Arc::new(CsvExec::try_new(
+            &source.path,
+            table_meta,
+            source.options,
+            projection.clone(),
+            batch_size,
+        )?))
     }
 }
 

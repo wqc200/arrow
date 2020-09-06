@@ -21,10 +21,13 @@ use std::sync::Arc;
 
 use crate::arrow::datatypes::SchemaRef;
 use crate::error::Result;
-use crate::execution::physical_plan::ExecutionPlan;
+use crate::physical_plan::ExecutionPlan;
+
+use arrow::record_batch::RecordBatch;
 
 /// Source table
 pub trait TableProvider {
+    fn name(&self) -> String;
     /// Perform a scan of a table and return a sequence of iterators over the data (one
     /// iterator per partition)
     fn scan(

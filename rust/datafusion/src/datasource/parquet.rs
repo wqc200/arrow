@@ -17,6 +17,7 @@
 
 //! Parquet data source
 
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::rc::Rc;
 use std::string::String;
@@ -28,40 +29,54 @@ use parquet::file::reader::SerializedFileReader;
 
 use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
-use crate::execution::physical_plan::parquet::ParquetExec;
-use crate::execution::physical_plan::{common, ExecutionPlan};
+use crate::physical_plan::parquet::ParquetExec;
+use crate::physical_plan::{common, ExecutionPlan};
 
-pub fn parquet_infer_schema(path: &str) -> Result<SchemaRef> {
-    let mut filenames: Vec<String> = vec![];
-    common::build_file_list(path, &mut filenames, ".parquet")?;
-    if filenames.is_empty() {
-        return Err(ExecutionError::General("No files found".to_string()));
+/// Table-based representation of a `ParquetSource`.
+pub struct ParquetSource {
+    path: String,
+}
+
+impl ParquetSource {
+    /// Attempt to initialize a new `ParquetSource` from a file path.
+    pub fn new(path: &str) -> Self {
+        Self {
+            path: path.to_string(),
+        }
     }
-
-    let file = File::open(&filenames[0])?;
-    let file_reader = Rc::new(SerializedFileReader::new(file)?);
-    let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-    let schema = arrow_reader.get_schema()?;
-
-    let schema_ref = Arc::new(schema);
-    Ok(schema_ref)
 }
 
 /// Table-based representation of a `ParquetFile`.
 pub struct ParquetTable {
-    path: String,
+    pub source: HashMap<String, Arc<ParquetSource>>,
 }
 
 impl ParquetTable {
     /// Attempt to initialize a new `ParquetTable` from a file path.
-    pub fn try_new(path: &str) -> Result<Self> {
-        Ok(Self {
-            path: path.to_string(),
-        })
+    pub fn new() -> Self {
+        Self {
+            source: HashMap::new(),
+        }
+    }
+
+    /// Attempt to add a new `ParquetSource` into `ParquetTable`
+    pub fn add_source(
+        &mut self,
+        schema_name: &str,
+        table_name: &str,
+        path: &str,
+    ) {
+        let compound_name = [schema_name, table_name].join(".");
+        let source = ParquetSource::new(path);
+        self.source.insert(compound_name.to_string(), Arc::new(source));
     }
 }
 
 impl TableProvider for ParquetTable {
+    fn name(&self) -> String {
+        "parquet".to_string()
+    }
+
     /// Scan the file(s), using the provided projection, and return one BatchIterator per
     /// partition.
     fn scan(
@@ -72,8 +87,20 @@ impl TableProvider for ParquetTable {
         projection: &Option<Vec<usize>>,
         batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        let compound_name = [schema_name, table_name].join(".");
+        let source;
+        if let Some(s) = self.source.get(compound_name).map(|s| s) {
+            source = s
+        } else {
+            return Err(ExecutionError::General(format!(
+                "Source not found {}.{}",
+                schema_name,
+                table_name
+            )))
+        }
+
         Ok(Arc::new(ParquetExec::try_new(
-            &self.path,
+            &source.path,
             table_meta,
             projection.clone(),
             batch_size,
@@ -93,9 +120,10 @@ mod tests {
 
     #[test]
     fn read_small_batches() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = None;
-        let exec = table.scan(&projection, 2)?;
+        let exec = provider.scan("default", "test", table_meta, &projection, 2)?;
         let it = exec.execute(0)?;
         let mut it = it.lock().unwrap();
 
@@ -114,10 +142,10 @@ mod tests {
 
     #[test]
     fn read_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
 
-        let x: Vec<String> = table
-            .schema()
+        let x: Vec<String> = table_meta
             .fields()
             .iter()
             .map(|f| format!("{}: {:?}", f.name(), f.data_type()))
@@ -139,7 +167,7 @@ mod tests {
         );
 
         let projection = None;
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(11, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -149,9 +177,10 @@ mod tests {
 
     #[test]
     fn read_bool_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![1]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -176,9 +205,10 @@ mod tests {
 
     #[test]
     fn read_i32_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![0]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -200,9 +230,10 @@ mod tests {
 
     #[test]
     fn read_i96_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![10]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -224,9 +255,10 @@ mod tests {
 
     #[test]
     fn read_f32_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![6]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -251,9 +283,10 @@ mod tests {
 
     #[test]
     fn read_f64_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![7]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -278,9 +311,10 @@ mod tests {
 
     #[test]
     fn read_binary_alltypes_plain_parquet() -> Result<()> {
-        let table = load_table("alltypes_plain.parquet")?;
+        let table_meta = parquet_infer_schema("alltypes_plain.parquet")?;
+        let provider = load_table("alltypes_plain.parquet")?;
         let projection = Some(vec![9]);
-        let batch = get_first_batch(table, &projection)?;
+        let batch = get_first_batch(table_meta, provider, &projection)?;
 
         assert_eq!(1, batch.num_columns());
         assert_eq!(8, batch.num_rows());
@@ -307,15 +341,19 @@ mod tests {
         let testdata =
             env::var("PARQUET_TEST_DATA").expect("PARQUET_TEST_DATA not defined");
         let filename = format!("{}/{}", testdata, name);
-        let table = ParquetTable::try_new(&filename)?;
-        Ok(Box::new(table))
+
+        let mut provider = ParquetTable::new();
+        provider.add_source("default", "test",&filename);
+
+        Ok(Box::new(provider))
     }
 
     fn get_first_batch(
-        table: Box<dyn TableProvider>,
+        table_meta: SchemaRef,
+        provider: Box<dyn TableProvider>,
         projection: &Option<Vec<usize>>,
     ) -> Result<RecordBatch> {
-        let exec = table.scan(projection, 1024)?;
+        let exec = provider.scan("default", "test", table_meta, projection, 1024)?;
         let it = exec.execute(0)?;
         let mut it = it.lock().expect("failed to lock mutex");
         Ok(it

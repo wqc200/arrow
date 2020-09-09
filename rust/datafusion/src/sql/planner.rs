@@ -164,7 +164,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
         })
     }
 
-    fn build_schema(&self, columns: &Vec<SQLColumnDef>) -> Result<Schema> {
+    pub fn build_schema(&self, columns: &Vec<SQLColumnDef>) -> Result<Schema> {
         let mut fields = Vec::new();
 
         for column in columns {

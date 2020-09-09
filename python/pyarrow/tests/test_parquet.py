@@ -497,6 +497,35 @@ def test_multiple_path_types(tempdir, use_legacy_dataset):
     tm.assert_frame_equal(df, df_read)
 
 
+@parametrize_legacy_dataset
+@pytest.mark.parametrize("filesystem", [
+    None, fs.LocalFileSystem(), LocalFileSystem.get_instance()
+])
+def test_relative_paths(tempdir, use_legacy_dataset, filesystem):
+    # reading and writing from relative paths
+    table = pa.table({"a": [1, 2, 3]})
+
+    # reading
+    pq.write_table(table, str(tempdir / "data.parquet"))
+    with util.change_cwd(tempdir):
+        result = pq.read_table("data.parquet", filesystem=filesystem,
+                               use_legacy_dataset=use_legacy_dataset)
+    assert result.equals(table)
+
+    # writing
+    with util.change_cwd(tempdir):
+        pq.write_table(table, "data2.parquet", filesystem=filesystem)
+    result = pq.read_table(tempdir / "data2.parquet")
+    assert result.equals(table)
+
+
+@parametrize_legacy_dataset
+def test_read_non_existing_file(use_legacy_dataset):
+    # ensure we have a proper error message
+    with pytest.raises(FileNotFoundError):
+        pq.read_table('i-am-not-existing.parquet')
+
+
 # TODO(dataset) duplicate column selection actually gives duplicate columns now
 @pytest.mark.pandas
 @parametrize_legacy_dataset_not_supported
@@ -2165,12 +2194,14 @@ def s3_example_s3fs(s3_connection, s3_server, s3_bucket):
         }
     )
 
-    test_dir = guid()
-    bucket_uri = 's3://{}/{}'.format(s3_bucket, test_dir)
+    test_path = '{}/{}'.format(s3_bucket, guid())
 
-    fs.mkdir(bucket_uri)
-    yield fs, bucket_uri
-    fs.rm(bucket_uri, recursive=True)
+    fs.mkdir(test_path)
+    yield fs, test_path
+    try:
+        fs.rm(test_path, recursive=True)
+    except FileNotFoundError:
+        pass
 
 
 @pytest.mark.pandas
@@ -2179,13 +2210,13 @@ def s3_example_s3fs(s3_connection, s3_server, s3_bucket):
 def test_read_partitioned_directory_s3fs(s3_example_s3fs, use_legacy_dataset):
     from pyarrow.filesystem import S3FSWrapper
 
-    fs, bucket_uri = s3_example_s3fs
+    fs, path = s3_example_s3fs
     wrapper = S3FSWrapper(fs)
-    _partition_test_for_filesystem(wrapper, bucket_uri)
+    _partition_test_for_filesystem(wrapper, path)
 
     # Check that we can auto-wrap
     dataset = pq.ParquetDataset(
-        bucket_uri, filesystem=fs, use_legacy_dataset=use_legacy_dataset
+        path, filesystem=fs, use_legacy_dataset=use_legacy_dataset
     )
     dataset.read()
 
@@ -2830,7 +2861,7 @@ def _test_write_to_dataset_with_partitions(base_path,
     pq.write_to_dataset(output_table, base_path, partition_by,
                         filesystem=filesystem)
 
-    metadata_path = os.path.join(base_path, '_common_metadata')
+    metadata_path = os.path.join(str(base_path), '_common_metadata')
 
     if filesystem is not None:
         with filesystem.open(metadata_path, 'wb') as f:
@@ -2888,7 +2919,7 @@ def _test_write_to_dataset_no_partitions(base_path,
     for i in range(n):
         pq.write_to_dataset(output_table, base_path,
                             filesystem=filesystem)
-    output_files = [file for file in filesystem.ls(base_path)
+    output_files = [file for file in filesystem.ls(str(base_path))
                     if file.endswith(".parquet")]
     assert len(output_files) == n
 
@@ -2936,7 +2967,34 @@ def test_write_to_dataset_with_partitions_and_index_name(
 @pytest.mark.pandas
 @parametrize_legacy_dataset
 def test_write_to_dataset_no_partitions(tempdir, use_legacy_dataset):
-    _test_write_to_dataset_no_partitions(str(tempdir))
+    _test_write_to_dataset_no_partitions(str(tempdir), use_legacy_dataset)
+
+
+@pytest.mark.pandas
+@parametrize_legacy_dataset
+def test_write_to_dataset_pathlib(tempdir, use_legacy_dataset):
+    _test_write_to_dataset_with_partitions(
+        tempdir / "test1", use_legacy_dataset)
+    _test_write_to_dataset_no_partitions(
+        tempdir / "test2", use_legacy_dataset)
+
+
+@pytest.mark.pandas
+@pytest.mark.s3
+@parametrize_legacy_dataset
+def test_write_to_dataset_pathlib_nonlocal(
+    tempdir, s3_example_s3fs, use_legacy_dataset
+):
+    # pathlib paths are only accepted for local files
+    fs, _ = s3_example_s3fs
+
+    with pytest.raises(TypeError, match="path-like objects are only allowed"):
+        _test_write_to_dataset_with_partitions(
+            tempdir / "test1", use_legacy_dataset, filesystem=fs)
+
+    with pytest.raises(TypeError, match="path-like objects are only allowed"):
+        _test_write_to_dataset_no_partitions(
+            tempdir / "test2", use_legacy_dataset, filesystem=fs)
 
 
 @pytest.mark.pandas
@@ -3564,20 +3622,19 @@ def test_parquet_writer_filesystem_s3(s3_example_fs):
     tm.assert_frame_equal(result, df)
 
 
-# TODO segfaulting (ARROW-9814?)
-# @pytest.mark.pandas
-# @pytest.mark.s3
-# def test_parquet_writer_filesystem_s3_uri(s3_example_fs):
-#     df = _test_dataframe(100)
-#     table = pa.Table.from_pandas(df, preserve_index=False)
+@pytest.mark.pandas
+@pytest.mark.s3
+def test_parquet_writer_filesystem_s3_uri(s3_example_fs):
+    df = _test_dataframe(100)
+    table = pa.Table.from_pandas(df, preserve_index=False)
 
-#     fs, uri, path = s3_example_fs
+    fs, uri, path = s3_example_fs
 
-#     with pq.ParquetWriter(uri, table.schema, version='2.0') as writer:
-#         writer.write_table(table)
+    with pq.ParquetWriter(uri, table.schema, version='2.0') as writer:
+        writer.write_table(table)
 
-#     result = _read_table(path, filesystem=fs).to_pandas()
-#     tm.assert_frame_equal(result, df)
+    result = _read_table(path, filesystem=fs).to_pandas()
+    tm.assert_frame_equal(result, df)
 
 
 @pytest.mark.pandas

@@ -27,6 +27,7 @@ import pytest
 import pyarrow as pa
 import pyarrow.csv
 import pyarrow.fs as fs
+from pyarrow.tests.util import change_cwd
 
 try:
     import pandas as pd
@@ -41,16 +42,6 @@ except ImportError:
 # Marks all of the tests in this module
 # Ignore these with pytest ... -m 'not dataset'
 pytestmark = pytest.mark.dataset
-
-
-@contextlib.contextmanager
-def change_cwd(path):
-    curdir = os.getcwd()
-    os.chdir(str(path))
-    try:
-        yield
-    finally:
-        os.chdir(curdir)
 
 
 def _generate_data(n):
@@ -519,6 +510,9 @@ def test_file_format_pickling():
             read_options={
                 'use_buffered_stream': True,
                 'buffer_size': 4096,
+            },
+            write_options={
+                'version': '2.0'
             }
         )
     ]
@@ -2310,3 +2304,34 @@ def test_write_table_multiple_fragments(tempdir):
     assert ds.dataset(base_dir, format="ipc").to_table().equals(
         pa.concat_tables([table]*2)
     )
+
+
+@pytest.mark.parquet
+def test_write_dataset_parquet(tempdir):
+    import pyarrow.parquet as pq
+
+    table = pa.table([
+        pa.array(range(20)), pa.array(np.random.randn(20)),
+        pa.array(np.repeat(['a', 'b'], 10))
+    ], names=["f1", "f2", "part"])
+
+    # using default "parquet" format string
+
+    base_dir = tempdir / 'parquet_dataset'
+    ds.write_dataset(table, base_dir, format="parquet")
+    # check that all files are present
+    file_paths = list(base_dir.rglob("*"))
+    expected_paths = [base_dir / "dat_0.parquet"]
+    assert set(file_paths) == set(expected_paths)
+    # check Table roundtrip
+    result = ds.dataset(base_dir, format="parquet").to_table()
+    assert result.equals(table)
+
+    # using custom options / format object
+
+    for version in ["1.0", "2.0"]:
+        format = ds.ParquetFileFormat(write_options=dict(version=version))
+        base_dir = tempdir / 'parquet_dataset_version{0}'.format(version)
+        ds.write_dataset(table, base_dir, format=format)
+        meta = pq.read_metadata(base_dir / "dat_0.parquet")
+        assert meta.format_version == version

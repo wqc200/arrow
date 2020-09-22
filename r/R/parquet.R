@@ -59,7 +59,8 @@ read_parquet <- function(file,
 #' This function enables you to write Parquet files from R.
 #'
 #' @param x An [arrow::Table][Table], or an object convertible to it.
-#' @param sink an [arrow::io::OutputStream][OutputStream] or a string which is interpreted as a file path
+#' @param sink an [arrow::io::OutputStream][OutputStream] or a string
+#'   interpreted as a file path or URI
 #' @param chunk_size chunk size in number of rows. If NULL, the total number of rows is used.
 #' @param version parquet version, "1.0" or "2.0". Default "1.0". Numeric values
 #'   are coerced to character.
@@ -129,7 +130,7 @@ write_parquet <- function(x,
   }
 
   if (is.string(sink)) {
-    sink <- FileOutputStream$create(sink)
+    sink <- make_output_stream(sink)
     on.exit(sink$close())
   } else if (!inherits(sink, "OutputStream")) {
     abort("sink must be a file path or an OutputStream")
@@ -358,6 +359,13 @@ ParquetWriterProperties$create <- function(table,
 #' - `sink` An [arrow::io::OutputStream][OutputStream]
 #' - `properties` An instance of [ParquetWriterProperties]
 #' - `arrow_properties` An instance of `ParquetArrowWriterProperties`
+#'
+#' @section Methods:
+#'
+#' - `WriteTable` Write a [Table] to `sink`
+#' - `Close` Close the writer. Note: does not close the `sink`.
+#'   [arrow::io::OutputStream][OutputStream] has its own `close()` method.
+#'
 #' @export
 #' @include arrow-package.R
 ParquetFileWriter <- R6Class("ParquetFileWriter", inherit = ArrowObject,
@@ -372,6 +380,7 @@ ParquetFileWriter$create <- function(schema,
                                      sink,
                                      properties = ParquetWriterProperties$create(),
                                      arrow_properties = ParquetArrowWriterProperties$create()) {
+  assert_is(sink, "OutputStream")
   shared_ptr(
     ParquetFileWriter,
     parquet___arrow___ParquetFileWriter__Open(schema, sink, properties, arrow_properties)

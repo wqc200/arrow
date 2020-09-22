@@ -228,7 +228,7 @@ FileSystem <- R6Class("FileSystem", inherit = ArrowObject,
       shared_ptr(InputStream, fs___FileSystem__OpenInputStream(self, clean_path_rel(path)))
     },
     OpenInputFile = function(path) {
-      shared_ptr(InputStream, fs___FileSystem__OpenInputFile(self, clean_path_rel(path)))
+      shared_ptr(RandomAccessFile, fs___FileSystem__OpenInputFile(self, clean_path_rel(path)))
     },
     OpenOutputStream = function(path) {
       shared_ptr(OutputStream, fs___FileSystem__OpenOutputStream(self, clean_path_rel(path)))
@@ -242,10 +242,30 @@ FileSystem <- R6Class("FileSystem", inherit = ArrowObject,
   )
 )
 FileSystem$from_uri <- function(uri) {
+  assert_that(is.string(uri))
   out <- fs___FileSystemFromUri(uri)
   out$fs <- shared_ptr(FileSystem, out$fs)$..dispatch()
   out
 }
+
+get_path_and_filesystem <- function(x, filesystem = NULL) {
+  # Wrapper around FileSystem$from_uri that handles local paths
+  # and an optional explicit filesystem
+  assert_that(is.string(x))
+  if (is_url(x)) {
+    if (!is.null(filesystem)) {
+      # Stop? Can't have URL (which yields a fs) and another fs
+    }
+    FileSystem$from_uri(x)
+  } else {
+    list(
+      fs = filesystem %||% LocalFileSystem$create(),
+      path = clean_path_abs(x)
+    )
+  }
+}
+
+is_url <- function(x) grepl("://", x)
 
 #' @usage NULL
 #' @format NULL
@@ -278,6 +298,21 @@ SubTreeFileSystem <- R6Class("SubTreeFileSystem", inherit = FileSystem)
 SubTreeFileSystem$create <- function(base_path, base_fs) {
   xp <- fs___SubTreeFileSystem__create(clean_path_rel(base_path), base_fs)
   shared_ptr(SubTreeFileSystem, xp)
+}
+
+#' Copy files between FileSystems
+#'
+#' @param src_fs The FileSystem from which files will be copied.
+#' @param src_paths The paths of files to be copied.
+#' @param dest_fs The FileSystem into which files will be copied.
+#' @param dest_paths Where the copied files should be placed.
+#' @param chunk_size The maximum size of block to read before flushing
+#' to the destination file. A larger chunk_size will use more memory while
+#' copying but may help accommodate high latency FileSystems.
+copy_files <- function(src_fs, src_paths, dest_fs, dest_paths,
+                       chunk_size = 1024L * 1024L) {
+  fs___CopyFiles(src_fs, src_paths, dest_fs, dest_paths,
+                 chunk_size, option_use_threads())
 }
 
 clean_path_abs <- function(path) {

@@ -32,7 +32,7 @@
 #' `parse_options`, `convert_options`, or `read_options` arguments, or you can
 #' use [CsvTableReader] directly for lower-level access.
 #'
-#' @param file A character file name, `raw` vector, or an Arrow input stream.
+#' @param file A character file name or URI, `raw` vector, or an Arrow input stream.
 #' If a file name, a memory-mapped Arrow [InputStream] will be opened and
 #' closed when finished; compression will be detected from the file extension
 #' and handled automatically. If an input stream is provided, it will be left
@@ -129,7 +129,12 @@ read_delim_arrow <- function(file,
     convert_options = convert_options
   )
 
-  tab <- reader$Read()$select(!!enquo(col_select))
+  tab <- reader$Read()
+
+  col_select <- enquo(col_select)
+  if (!quo_is_null(col_select)) {
+    tab <- tab[vars_select(names(tab), !!col_select)]
+  }
 
   if (isTRUE(as_data_frame)) {
     tab <- as.data.frame(tab)

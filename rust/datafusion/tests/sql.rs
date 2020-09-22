@@ -21,9 +21,9 @@ use std::sync::Arc;
 extern crate arrow;
 extern crate datafusion;
 
-use arrow::array::*;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
+use arrow::{array::*, datatypes::TimeUnit};
 
 use datafusion::datasource::{csv::CsvReadOptions, MemTable};
 use datafusion::error::Result;
@@ -609,6 +609,77 @@ fn execute(ctx: &mut ExecutionContext, sql: &str) -> Vec<String> {
     result_str(&results)
 }
 
+/// Converts an array's value at `row_index` to a string.
+fn array_str(array: &Arc<dyn Array>, row_index: usize) -> String {
+    if array.is_null(row_index) {
+        return "NULL".to_string();
+    }
+    // beyond this point, we can assume that `array...downcast().value(row_index)` is valid,
+    // due to the `if` above.
+
+    match array.data_type() {
+        DataType::Int8 => {
+            let array = array.as_any().downcast_ref::<Int8Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Int16 => {
+            let array = array.as_any().downcast_ref::<Int16Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Int32 => {
+            let array = array.as_any().downcast_ref::<Int32Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Int64 => {
+            let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::UInt8 => {
+            let array = array.as_any().downcast_ref::<UInt8Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::UInt16 => {
+            let array = array.as_any().downcast_ref::<UInt16Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::UInt32 => {
+            let array = array.as_any().downcast_ref::<UInt32Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::UInt64 => {
+            let array = array.as_any().downcast_ref::<UInt64Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Float32 => {
+            let array = array.as_any().downcast_ref::<Float32Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Float64 => {
+            let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Utf8 => {
+            let array = array.as_any().downcast_ref::<StringArray>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::Boolean => {
+            let array = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+            format!("{:?}", array.value(row_index))
+        }
+        DataType::FixedSizeList(_, n) => {
+            let array = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+            let array = array.value(row_index);
+
+            let mut r = Vec::with_capacity(*n as usize);
+            for i in 0..*n {
+                r.push(array_str(&array, i as usize));
+            }
+            format!("[{}]", r.join(","))
+        }
+        _ => "???".to_string(),
+    }
+}
+
 fn result_str(results: &[RecordBatch]) -> Vec<String> {
     let mut result = vec![];
     for batch in results {
@@ -620,72 +691,7 @@ fn result_str(results: &[RecordBatch]) -> Vec<String> {
                 }
                 let column = batch.column(column_index);
 
-                match column.data_type() {
-                    DataType::Int8 => {
-                        let array = column.as_any().downcast_ref::<Int8Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Int16 => {
-                        let array = column.as_any().downcast_ref::<Int16Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Int32 => {
-                        let array = column.as_any().downcast_ref::<Int32Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Int64 => {
-                        let array = column.as_any().downcast_ref::<Int64Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::UInt8 => {
-                        let array = column.as_any().downcast_ref::<UInt8Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::UInt16 => {
-                        let array =
-                            column.as_any().downcast_ref::<UInt16Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::UInt32 => {
-                        let array =
-                            column.as_any().downcast_ref::<UInt32Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::UInt64 => {
-                        let array =
-                            column.as_any().downcast_ref::<UInt64Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Float32 => {
-                        let array =
-                            column.as_any().downcast_ref::<Float32Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Float64 => {
-                        let array =
-                            column.as_any().downcast_ref::<Float64Array>().unwrap();
-                        str.push_str(&format!("{:?}", array.value(row_index)));
-                    }
-                    DataType::Utf8 => {
-                        let array =
-                            column.as_any().downcast_ref::<StringArray>().unwrap();
-                        let s = if array.is_null(row_index) {
-                            "NULL"
-                        } else {
-                            array.value(row_index)
-                        };
-
-                        str.push_str(&format!("{:?}", s));
-                    }
-                    DataType::Boolean => {
-                        let array =
-                            column.as_any().downcast_ref::<BooleanArray>().unwrap();
-                        let s = array.value(row_index);
-
-                        str.push_str(&format!("{:?}", s));
-                    }
-                    _ => str.push_str("???"),
-                }
+                str.push_str(&array_str(column, row_index));
             }
             result.push(str);
         }
@@ -714,6 +720,30 @@ fn query_length() -> Result<()> {
 }
 
 #[test]
+fn query_not() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![Field::new("c1", DataType::Boolean, true)]));
+
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(BooleanArray::from(vec![
+            Some(false),
+            None,
+            Some(true),
+        ]))],
+    )?;
+
+    let table = MemTable::new(schema, vec![vec![data]])?;
+
+    let mut ctx = ExecutionContext::new();
+    ctx.register_table("test", Box::new(table));
+    let sql = "SELECT NOT c1 FROM test";
+    let actual = execute(&mut ctx, sql).join("\n");
+    let expected = "true\nNULL\nfalse".to_string();
+    assert_eq!(expected, actual);
+    Ok(())
+}
+
+#[test]
 fn query_concat() -> Result<()> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("c1", DataType::Utf8, false),
@@ -734,7 +764,38 @@ fn query_concat() -> Result<()> {
     ctx.register_table("test", Box::new(table));
     let sql = "SELECT concat(c1, '-hi-', cast(c2 as varchar)) FROM test";
     let actual = execute(&mut ctx, sql);
-    let expected = vec!["\"-hi-0\"", "\"a-hi-1\"", "\"NULL\"", "\"aaa-hi-3\""];
+    let expected = vec!["\"-hi-0\"", "\"a-hi-1\"", "NULL", "\"aaa-hi-3\""];
+    assert_eq!(expected, actual);
+    Ok(())
+}
+
+#[test]
+fn query_array() -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("c1", DataType::Utf8, false),
+        Field::new("c2", DataType::Int32, true),
+    ]));
+
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["", "a", "aa", "aaa"])),
+            Arc::new(Int32Array::from(vec![Some(0), Some(1), None, Some(3)])),
+        ],
+    )?;
+
+    let table = MemTable::new(schema, vec![vec![data]])?;
+
+    let mut ctx = ExecutionContext::new();
+    ctx.register_table("test", Box::new(table));
+    let sql = "SELECT array(c1, cast(c2 as varchar)) FROM test";
+    let actual = execute(&mut ctx, sql);
+    let expected = vec![
+        "[\"\",\"0\"]",
+        "[\"a\",\"1\"]",
+        "[\"aa\",NULL]",
+        "[\"aaa\",\"3\"]",
+    ];
     assert_eq!(expected, actual);
     Ok(())
 }
@@ -758,6 +819,42 @@ fn like() -> Result<()> {
     let actual = execute(&mut ctx, sql).join("\n");
 
     let expected = "1".to_string();
+    assert_eq!(expected, actual);
+    Ok(())
+}
+
+fn make_timestamp_nano_table() -> Result<Box<MemTable>> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("value", DataType::Int32, true),
+    ]));
+
+    let mut builder = TimestampNanosecondArray::builder(3);
+
+    builder.append_value(1599572549190855000)?; // 2020-09-08T13:42:29.190855+00:00
+    builder.append_value(1599568949190855000)?; // 2020-09-08T12:42:29.190855+00:00
+    builder.append_value(1599565349190855000)?; // 2020-09-08T11:42:29.190855+00:00
+
+    let data = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(builder.finish()),
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(3)])),
+        ],
+    )?;
+    let table = MemTable::new(schema, vec![vec![data]])?;
+    Ok(Box::new(table))
+}
+
+#[test]
+fn to_timstamp() -> Result<()> {
+    let mut ctx = ExecutionContext::new();
+    ctx.register_table("ts_data", make_timestamp_nano_table()?);
+
+    let sql = "SELECT COUNT(*) FROM ts_data where ts > to_timestamp('2020-09-08T12:00:00+00:00')";
+    let actual = execute(&mut ctx, sql).join("\n");
+
+    let expected = "2".to_string();
     assert_eq!(expected, actual);
     Ok(())
 }

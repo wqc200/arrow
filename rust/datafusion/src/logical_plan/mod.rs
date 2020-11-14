@@ -742,6 +742,8 @@ pub enum LogicalPlan {
         projection: Option<Vec<usize>>,
         /// The schema description of the output
         projected_schema: SchemaRef,
+        /// Essentially a WHERE clause
+        predicate: Option<Expr>,
     },
     /// Produces rows that come from a `Vec` of in memory `RecordBatch`es
     InMemoryScan {
@@ -874,8 +876,9 @@ impl LogicalPlan {
             LogicalPlan::TableScan {
                 ref table_name,
                 ref projection,
+                predicate: ref predicate,
                 ..
-            } => write!(f, "TableScan: {} projection={:?}", table_name, projection),
+            } => write!(f, "TableScan: {} projection={:?}, predicate={:?}", table_name, projection, predicate),
             LogicalPlan::InMemoryScan { ref projection, .. } => {
                 write!(f, "InMemoryScan: projection={:?}", projection)
             }
@@ -1063,13 +1066,14 @@ impl LogicalPlanBuilder {
         });
         let projected_schema =
             projected_schema.map_or(table_schema.clone(), |s| SchemaRef::new(s));
-
+        let predicate = None;
         Ok(Self::from(&LogicalPlan::TableScan {
             schema_name: schema_name.to_owned(),
             table_name: table_name.to_owned(),
             table_schema,
             projected_schema,
             projection,
+            predicate: predicate,
         }))
     }
 

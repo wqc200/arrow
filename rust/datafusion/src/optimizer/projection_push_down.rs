@@ -219,6 +219,7 @@ fn optimize_plan(
             table_name,
             table_schema,
             projection,
+            predicate: predicate,
             ..
         } => {
             let (projection, projected_schema) = get_projected_schema(
@@ -235,6 +236,7 @@ fn optimize_plan(
                 table_schema: table_schema.clone(),
                 projection: Some(projection),
                 projected_schema: projected_schema,
+                predicate: predicate.clone(),
             })
         }
         LogicalPlan::InMemoryScan {

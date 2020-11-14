@@ -202,7 +202,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
         }
     }
 
-    fn from_join_to_plan(&self, from: &Vec<TableWithJoins>) -> Result<LogicalPlan> {
+    pub fn from_join_to_plan(&self, from: &Vec<TableWithJoins>) -> Result<LogicalPlan> {
         if from.len() == 0 {
             return Ok(LogicalPlanBuilder::empty().build()?);
         }
@@ -270,7 +270,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     }
 
     /// Apply a filter to the plan
-    fn filter(
+    pub fn filter(
         &self,
         plan: &LogicalPlan,
         predicate: &Option<SQLExpr>,
@@ -284,12 +284,12 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     }
 
     /// Wrap a plan in a projection
-    fn project(&self, input: &LogicalPlan, expr: Vec<Expr>) -> Result<LogicalPlan> {
+    pub fn project(&self, input: &LogicalPlan, expr: Vec<Expr>) -> Result<LogicalPlan> {
         LogicalPlanBuilder::from(input).project(expr)?.build()
     }
 
     /// Wrap a plan in an aggregate
-    fn aggregate(
+    pub fn aggregate(
         &self,
         input: &LogicalPlan,
         projection_expr: Vec<Expr>,
@@ -339,7 +339,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     }
 
     /// Wrap a plan in a limit
-    fn limit(&self, input: &LogicalPlan, limit: &Option<SQLExpr>) -> Result<LogicalPlan> {
+    pub fn limit(&self, input: &LogicalPlan, limit: &Option<SQLExpr>) -> Result<LogicalPlan> {
         match *limit {
             Some(ref limit_expr) => {
                 let n = match self.sql_to_rex(&limit_expr, &input.schema())? {
@@ -356,7 +356,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     }
 
     /// Wrap the logical in a sort
-    fn order_by(
+    pub fn order_by(
         &self,
         plan: &LogicalPlan,
         order_by: &Vec<OrderByExpr>,
@@ -383,7 +383,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
     }
 
     /// Generate a relational expression from a select SQL expression
-    fn sql_select_to_rex(&self, sql: &SelectItem, schema: &Schema) -> Result<Expr> {
+    pub fn sql_select_to_rex(&self, sql: &SelectItem, schema: &Schema) -> Result<Expr> {
         match sql {
             SelectItem::UnnamedExpr(expr) => self.sql_to_rex(expr, schema),
             SelectItem::ExprWithAlias { expr, alias } => Ok(Alias(
@@ -569,7 +569,7 @@ impl<'a, S: SchemaProvider> SqlToRel<'a, S> {
 }
 
 /// Determine if an expression is an aggregate expression or not
-fn is_aggregate_expr(e: &Expr) -> bool {
+pub fn is_aggregate_expr(e: &Expr) -> bool {
     match e {
         Expr::AggregateFunction { .. } => true,
         _ => false,

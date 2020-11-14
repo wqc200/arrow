@@ -280,6 +280,7 @@ impl ExecutionContext {
                     table_schema: schema.clone(),
                     projected_schema: schema,
                     projection: None,
+                    predicate: None,
                 };
                 Ok(Arc::new(DataFrameImpl::new(
                     self.state.clone(),
@@ -508,7 +509,6 @@ impl FunctionRegistry for ExecutionContextState {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::datasource::MemTable;
     use crate::logical_plan::{col, create_udf, sum};
@@ -691,8 +691,8 @@ mod tests {
             projection: None,
             projected_schema: schema.clone(),
         })
-        .project(vec![col("b")])?
-        .build()?;
+            .project(vec![col("b")])?
+            .build()?;
         assert_fields_eq(&plan, vec!["b"]);
 
         let ctx = ExecutionContext::new();

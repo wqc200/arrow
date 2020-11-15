@@ -141,9 +141,10 @@ impl DefaultPhysicalPlanner {
             LogicalPlan::TableScan {
                 table_name,
                 projection,
+                predicate,
                 ..
             } => match ctx_state.datasources.get(table_name) {
-                Some(provider) => provider.scan(projection, batch_size),
+                Some(provider) => provider.scan(projection, predicate, batch_size),
                 _ => Err(ExecutionError::General(format!(
                     "No table named {}",
                     table_name

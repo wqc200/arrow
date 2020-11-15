@@ -24,6 +24,7 @@ use arrow::datatypes::*;
 
 use crate::datasource::TableProvider;
 use crate::error::Result;
+use crate::logical_plan::Expr;
 use crate::physical_plan::parquet::ParquetExec;
 use crate::physical_plan::ExecutionPlan;
 
@@ -56,6 +57,7 @@ impl TableProvider for ParquetTable {
     fn scan(
         &self,
         projection: &Option<Vec<usize>>,
+        predicate: &Option<Expr>,
         batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(ParquetExec::try_new(

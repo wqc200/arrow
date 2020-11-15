@@ -26,6 +26,7 @@ use arrow::record_batch::RecordBatch;
 
 use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
+use crate::logical_plan::Expr;
 use crate::physical_plan::memory::MemoryExec;
 use crate::physical_plan::ExecutionPlan;
 
@@ -57,7 +58,7 @@ impl MemTable {
     /// Create a mem table by reading from another data source
     pub fn load(t: &dyn TableProvider) -> Result<Self> {
         let schema = t.schema();
-        let exec = t.scan(&None, 1024 * 1024)?;
+        let exec = t.scan(&None, &None, 1024 * 1024)?;
 
         let mut data: Vec<Vec<RecordBatch>> =
             Vec::with_capacity(exec.output_partitioning().partition_count());
@@ -83,6 +84,7 @@ impl TableProvider for MemTable {
     fn scan(
         &self,
         projection: &Option<Vec<usize>>,
+        predicate: &Option<Expr>,
         _batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let columns: Vec<usize> = match projection {

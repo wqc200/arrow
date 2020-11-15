@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use crate::datasource::TableProvider;
 use crate::error::{ExecutionError, Result};
+use crate::logical_plan::Expr;
 use crate::physical_plan::csv::CsvExec;
 pub use crate::physical_plan::csv::CsvReadOptions;
 use crate::physical_plan::{common, ExecutionPlan};
@@ -91,6 +92,7 @@ impl TableProvider for CsvFile {
     fn scan(
         &self,
         projection: &Option<Vec<usize>>,
+        predicate: &Option<Expr>,
         batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         Ok(Arc::new(CsvExec::try_new(

@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use crate::arrow::datatypes::SchemaRef;
 use crate::error::Result;
+use crate::logical_plan::Expr;
 use crate::physical_plan::ExecutionPlan;
 
 /// Source table
@@ -32,6 +33,7 @@ pub trait TableProvider {
     fn scan(
         &self,
         projection: &Option<Vec<usize>>,
+        predicate: &Option<Expr>,
         batch_size: usize,
     ) -> Result<Arc<dyn ExecutionPlan>>;
 }
